@@ -193,15 +193,59 @@ Show that the full model produces smaller residuals (better compression) AND bet
 
 ## 8. Technical Stack
 
+### 8.1 Platform: Google Colab
+
+The prototype runs on Google Colab for GPU access without local setup.
+
 | Component | Choice | Rationale |
 |-----------|--------|-----------|
+| Platform | Google Colab (Pro recommended) | Free T4 GPU; Pro gives A100/V100 + longer sessions |
 | Rasterizer | gsplat | Decoupled function-call API — accepts arbitrary Gaussian tensors |
-| Autograd | PyTorch | Split-variable math is standard differentiable ops |
+| Autograd | PyTorch (pre-installed on Colab) | Split-variable math is standard differentiable ops |
 | Data loading | Custom | NeRF Synthetic JSON + images (~50 lines) |
 | Training | Custom loop | Need custom phases (root fit → level-by-level splits) |
 | Metrics | torchmetrics | PSNR, SSIM, LPIPS |
-| Logging | tensorboard or wandb | Training curves, rendered images |
+| Logging | tensorboard (built into Colab) | Training curves, rendered images |
 | Language | Python | No custom CUDA needed — hierarchy is pure PyTorch |
+
+### 8.2 Colab-Specific Design
+
+**Project structure:** The codebase lives in this repo as Python modules (not notebooks). A thin Colab notebook clones the repo, installs dependencies, and calls into the modules. This keeps code reviewable/testable outside Colab while using Colab for GPU execution.
+
+```
+GaussianFractalLOD/
+├── gaussianfractallod/          # Python package
+│   ├── __init__.py
+│   ├── data.py                  # NeRF Synthetic data loading
+│   ├── split_tree.py            # Split-variable hierarchy
+│   ├── derive.py                # R&G child derivation (bijective map)
+│   ├── train.py                 # Training loop (all phases)
+│   ├── render.py                # Reconstruction + gsplat rendering
+│   └── eval.py                  # Metrics (PSNR, SSIM, LPIPS)
+├── notebooks/
+│   └── train_colab.ipynb        # Thin Colab notebook
+├── docs/
+│   └── ...
+└── configs/
+    └── default.yaml             # Hyperparameters
+```
+
+**Data handling:** Download NeRF Synthetic dataset to Colab's local disk (fast I/O) at session start. ~400 MB, takes ~1 min.
+
+**Checkpoint persistence:** Save checkpoints (root Gaussians + split-variable tree) to Google Drive after each training phase. This survives Colab session disconnects. Checkpoint format: PyTorch state dict.
+
+**Session management:**
+- Free tier: ~12 hr max, ~90 min idle timeout. Each training phase (root fit, per-level splits) should complete within a session.
+- Save after each phase → can resume in a new session if disconnected.
+- Pro tier recommended for full training runs across all 8 scenes.
+
+**Dependency installation** (first cell of notebook):
+```bash
+pip install gsplat torchmetrics lpips
+git clone <this-repo>
+```
+
+gsplat compiles CUDA kernels on first import (~2-3 min on Colab). This only happens once per session.
 
 ## 9. Relationship to Prior Work
 

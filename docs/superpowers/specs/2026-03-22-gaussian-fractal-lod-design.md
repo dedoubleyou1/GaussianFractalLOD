@@ -74,6 +74,10 @@ c_B = c_p - (π_A/π_B) · Δc            # weighted zero-sum conserved
 
 All operations are differentiable. No Gaussian except the root is stored directly — every descendant is derived by recursively applying splits.
 
+**Simplification note:** The per-axis variance split formulas assume the split operates in the parent's eigenbasis (diagonal covariance in local frame). For arbitrary split directions this is an approximation of the full second-moment conservation — the optimizer can compensate, but this should be validated empirically. If needed, a full covariance-aware split can be added later.
+
+**Numerical stability:** Recursive Cholesky decomposition across many levels can compound numerical error. Use log-space parameterization for scales and add a small ε to the diagonal before decomposition. Monitor condition numbers during training.
+
 ### 4.4 Reconstruction and LoD
 
 ```python
@@ -96,7 +100,7 @@ LoD selection: choose how deep to recurse. Each level is self-consistent because
 
 ### 5.1 Phase 1: Root Gaussian Fitting
 
-Train a small set of root-level Gaussians (~8–64) using standard 3DGS training with a controlled Gaussian budget. These form the coarsest renderable LoD — a "forest" of trees. Standard densification and pruning, capped at the target root count. Freeze root parameters after convergence.
+Train a small set of root-level Gaussians using standard 3DGS training with a controlled Gaussian budget. Start with 32 roots for all NeRF Synthetic scenes (experiment with 8, 16, 32, 64). These form the coarsest renderable LoD — a "forest" of trees. Standard densification and pruning, capped at the target root count. Freeze root parameters after convergence (convergence = training loss plateau for 1000 iterations).
 
 ### 5.2 Phase 2: Level-by-Level Split Fitting
 
@@ -117,7 +121,8 @@ For each binary depth level L = 1, 2, ..., max_depth:
 - Adam optimizer on split variables only (all ancestor levels frozen)
 
 **Prune:**
-- After convergence, set occupancy bit to 0 for children whose mass partition π_i < ε
+- After convergence (loss plateau for 500 iterations at this level), set occupancy bit to 0 for children whose mass partition π_i < ε (default ε = 0.01)
+- When one child is pruned, remaining split variables for that node are dead — zero them and exclude from entropy calculations
 - Renormalize remaining child's mass to maintain conservation
 - Pruned subtrees don't exist — parent Gaussian renders in their place
 

@@ -62,9 +62,6 @@ def render_gaussians(
     )
     sh_coeffs_3 = gaussians.sh_coeffs[:, :expected_dim].reshape(N, num_sh, 3)
 
-    # gsplat expects backgrounds as (C, H, W, 3) where C is batch size
-    bg = background.reshape(1, 1, 1, 3).expand(1, height, width, 3)
-
     renders, alphas, meta = rasterization(
         means=gaussians.means,
         quats=quats,
@@ -76,7 +73,11 @@ def render_gaussians(
         width=width,
         height=height,
         sh_degree=sh_degree,
-        backgrounds=bg,
     )
 
-    return renders[0]  # (H, W, 3)
+    # Apply background manually: rendered = rendered + (1 - alpha) * background
+    render_img = renders[0]   # (H, W, 3)
+    render_alpha = alphas[0]  # (H, W, 1)
+    render_img = render_img + (1.0 - render_alpha) * background.view(1, 1, 3)
+
+    return render_img

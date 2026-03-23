@@ -102,7 +102,7 @@ def build_cache(roots: Gaussian, tree: SplitTree, depth: int) -> Gaussian:
     # Detach to ensure no gradient graph is retained
     return Gaussian(
         means=cached.means.detach(),
-        scales=cached.scales.detach(),
+        L_flat=cached.L_flat.detach(),
         opacities=cached.opacities.detach(),
         sh_coeffs=cached.sh_coeffs.detach(),
     )

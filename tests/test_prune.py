@@ -40,7 +40,7 @@ def test_prune_converged_splits():
     with torch.no_grad():
         # Node 0: split vars near zero → converged, should prune both children
         tree.levels[0].position_split[0] = torch.tensor([0.001, 0.0, 0.0])
-        tree.levels[0].cov_split[0] = torch.zeros(6)
+        tree.levels[0].variance_split[0] = torch.zeros(3)
         tree.levels[0].color_split[0] = torch.zeros(3)
         # Node 1: meaningful split → should keep
         tree.levels[0].position_split[1] = torch.tensor([0.5, 0.3, 0.0])

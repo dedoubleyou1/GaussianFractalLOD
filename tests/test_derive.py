@@ -66,7 +66,7 @@ def _make_split_vars(sh_dim=3):
     return SplitVariables(
         mass_logit=torch.tensor([0.0]),
         position_split=torch.tensor([[0.1, 0.0, 0.0]]),
-        cov_split=torch.zeros(1, 6),
+        variance_split=torch.zeros(1, 3),
         color_split=torch.zeros(1, sh_dim),
     )
 
@@ -94,7 +94,7 @@ def test_color_conservation():
     sv = SplitVariables(
         mass_logit=torch.tensor([0.5]),
         position_split=torch.tensor([[0.1, 0.2, -0.1]]),
-        cov_split=torch.zeros(1, 6),
+        variance_split=torch.zeros(1, 3),
         color_split=torch.randn(1, 3) * 0.1,
     )
     child_a, child_b = derive_children(parent, sv)
@@ -109,7 +109,7 @@ def test_derivation_is_differentiable():
     sv = SplitVariables(
         mass_logit=torch.tensor([0.0], requires_grad=True),
         position_split=torch.tensor([[0.1, 0.0, 0.0]], requires_grad=True),
-        cov_split=torch.zeros(1, 6, requires_grad=True),
+        variance_split=torch.zeros(1, 3, requires_grad=True),
         color_split=torch.zeros(1, 3, requires_grad=True),
     )
     child_a, child_b = derive_children(parent, sv)
@@ -124,7 +124,7 @@ def test_children_covariance_positive_definite():
     sv = SplitVariables(
         mass_logit=torch.tensor([0.3]),
         position_split=torch.tensor([[0.2, 0.1, -0.1]]),
-        cov_split=torch.randn(1, 6) * 0.1,
+        variance_split=torch.randn(1, 3) * 0.1,
         color_split=torch.zeros(1, 3),
     )
     child_a, child_b = derive_children(parent, sv)

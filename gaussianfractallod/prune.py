@@ -49,10 +49,10 @@ def prune_level(
     with torch.no_grad():
         # --- 1. Split convergence: entire split is useless ---
         # If all split variables are near zero, children ≈ parent
-        pos_mag = level.position_split.detach().norm(dim=-1)  # (N,)
-        cov_mag = level.cov_split.detach().norm(dim=-1)       # (N,)
+        pos_mag = level.position_split.detach().norm(dim=-1)      # (N,)
+        var_mag = level.variance_split.detach().abs().sum(dim=-1)  # (N,) deviation from 0 (uniform)
         color_mag = level.color_split.detach().norm(dim=-1)    # (N,)
-        total_mag = pos_mag + cov_mag + color_mag
+        total_mag = pos_mag + var_mag + color_mag
 
         converged = total_mag < split_magnitude_threshold
         if converged.any():
@@ -97,7 +97,7 @@ def prune_level(
 
         if dead.any():
             level.position_split[dead] = 0.0
-            level.cov_split[dead] = 0.0
+            level.variance_split[dead] = 0.0
             level.color_split[dead] = 0.0
 
         if only_a.any():

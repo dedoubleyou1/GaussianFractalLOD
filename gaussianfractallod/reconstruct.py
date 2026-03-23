@@ -2,6 +2,9 @@
 
 Iteratively applies split derivation level-by-level, respecting occupancy masks.
 Uses iterative (not recursive) approach for GPU-friendly batched operations.
+
+Supports caching: when training level L, levels 0..L-1 are frozen and their
+output is constant. Pass cached_parents to skip recomputing frozen levels.
 """
 
 import torch
@@ -10,8 +13,50 @@ from gaussianfractallod.split_tree import SplitTree
 from gaussianfractallod.derive import derive_children
 
 
+def _apply_one_level(current: Gaussian, tree: SplitTree, level_idx: int) -> Gaussian:
+    """Apply one level of split derivation with occupancy masking."""
+    split_vars = tree.get_level_split_vars(level_idx)
+    occupancy = tree.get_occupancy(level_idx)
+
+    child_a, child_b = derive_children(current, split_vars)
+
+    parts_means = []
+    parts_scales = []
+    parts_opacities = []
+    parts_sh = []
+
+    mask_a = occupancy[:, 0]
+    mask_b = occupancy[:, 1]
+
+    if mask_a.any():
+        parts_means.append(child_a.means[mask_a])
+        parts_scales.append(child_a.scales[mask_a])
+        parts_opacities.append(child_a.opacities[mask_a])
+        parts_sh.append(child_a.sh_coeffs[mask_a])
+
+    if mask_b.any():
+        parts_means.append(child_b.means[mask_b])
+        parts_scales.append(child_b.scales[mask_b])
+        parts_opacities.append(child_b.opacities[mask_b])
+        parts_sh.append(child_b.sh_coeffs[mask_b])
+
+    if not parts_means:
+        return current
+
+    return Gaussian(
+        means=torch.cat(parts_means, dim=0),
+        scales=torch.cat(parts_scales, dim=0),
+        opacities=torch.cat(parts_opacities, dim=0),
+        sh_coeffs=torch.cat(parts_sh, dim=0),
+    )
+
+
 def reconstruct(
-    roots: Gaussian, tree: SplitTree, target_depth: int
+    roots: Gaussian,
+    tree: SplitTree,
+    target_depth: int,
+    cached_parents: Gaussian | None = None,
+    cache_depth: int = 0,
 ) -> Gaussian:
     """Reconstruct Gaussians at a target binary depth.
 
@@ -20,6 +65,9 @@ def reconstruct(
         tree: The split tree containing split variables.
         target_depth: How many binary split levels to apply.
             0 = return roots, 1 = first split, etc.
+        cached_parents: Pre-computed Gaussians at cache_depth. If provided,
+            skips levels 0..cache_depth-1 (the frozen levels).
+        cache_depth: The depth that cached_parents represents.
 
     Returns:
         Gaussian batch containing all leaf Gaussians at the target depth.
@@ -27,44 +75,34 @@ def reconstruct(
     if target_depth == 0 or tree.depth == 0:
         return roots
 
-    current = roots
     actual_depth = min(target_depth, tree.depth)
 
-    for level_idx in range(actual_depth):
-        split_vars = tree.get_level_split_vars(level_idx)
-        occupancy = tree.get_occupancy(level_idx)  # (num_nodes, 2)
+    # Start from cache if available
+    if cached_parents is not None and cache_depth > 0:
+        current = cached_parents
+        start_level = cache_depth
+    else:
+        current = roots
+        start_level = 0
 
-        child_a, child_b = derive_children(current, split_vars)
-
-        # Collect active children
-        parts_means = []
-        parts_scales = []
-        parts_opacities = []
-        parts_sh = []
-
-        mask_a = occupancy[:, 0]
-        mask_b = occupancy[:, 1]
-
-        if mask_a.any():
-            parts_means.append(child_a.means[mask_a])
-            parts_scales.append(child_a.scales[mask_a])
-            parts_opacities.append(child_a.opacities[mask_a])
-            parts_sh.append(child_a.sh_coeffs[mask_a])
-
-        if mask_b.any():
-            parts_means.append(child_b.means[mask_b])
-            parts_scales.append(child_b.scales[mask_b])
-            parts_opacities.append(child_b.opacities[mask_b])
-            parts_sh.append(child_b.sh_coeffs[mask_b])
-
-        if not parts_means:
-            return current
-
-        current = Gaussian(
-            means=torch.cat(parts_means, dim=0),
-            scales=torch.cat(parts_scales, dim=0),
-            opacities=torch.cat(parts_opacities, dim=0),
-            sh_coeffs=torch.cat(parts_sh, dim=0),
-        )
+    for level_idx in range(start_level, actual_depth):
+        current = _apply_one_level(current, tree, level_idx)
 
     return current
+
+
+def build_cache(roots: Gaussian, tree: SplitTree, depth: int) -> Gaussian:
+    """Build a detached cache of Gaussians at a given depth.
+
+    Used during training: compute the frozen levels once, cache the result,
+    and reuse it for every training step at the current level.
+    """
+    with torch.no_grad():
+        cached = reconstruct(roots, tree, depth)
+    # Detach to ensure no gradient graph is retained
+    return Gaussian(
+        means=cached.means.detach(),
+        scales=cached.scales.detach(),
+        opacities=cached.opacities.detach(),
+        sh_coeffs=cached.sh_coeffs.detach(),
+    )

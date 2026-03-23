@@ -1,6 +1,7 @@
 """Full training orchestrator: Phase 1 (roots) + Phase 2 (splits)."""
 
 import torch
+import random
 import logging
 from pathlib import Path
 from torch.utils.tensorboard import SummaryWriter
@@ -11,6 +12,7 @@ from gaussianfractallod.gaussian import Gaussian
 from gaussianfractallod.split_tree import SplitTree
 from gaussianfractallod.train_roots import init_roots, train_roots_step
 from gaussianfractallod.train_splits import train_split_level_step
+from gaussianfractallod.reconstruct import build_cache
 from gaussianfractallod.prune import prune_level
 from gaussianfractallod.checkpoint import save_checkpoint, load_checkpoint
 
@@ -67,7 +69,7 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, SplitT
         plateau_count = 0
 
         for step in range(cfg.root_iterations):
-            idx = step % len(dataset)
+            idx = random.randint(0, len(dataset) - 1)
             gt_image, camera = dataset[idx]
             gt_image = gt_image.to(device)
             camera = {k: v.to(device) if isinstance(v, torch.Tensor) else v
@@ -125,11 +127,22 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, SplitT
         )
 
         target_depth = level + 1
+
+        # Cache frozen levels — only recompute current level each step
+        if level > 0:
+            cached_parents = build_cache(roots, tree, level)
+            logger.info(
+                f"Cached {cached_parents.num_gaussians} parent Gaussians "
+                f"(skipping {level} frozen levels per step)"
+            )
+        else:
+            cached_parents = None
+
         best_loss = float("inf")
         plateau_count = 0
 
         for step in range(cfg.split_iterations_per_level):
-            idx = step % len(dataset)
+            idx = random.randint(0, len(dataset) - 1)
             gt_image, camera = dataset[idx]
             gt_image = gt_image.to(device)
             camera = {k: v.to(device) if isinstance(v, torch.Tensor) else v
@@ -139,6 +152,8 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, SplitT
                 roots, tree, target_depth,
                 gt_image, camera, optimizer,
                 ssim_weight=cfg.ssim_weight, background=background,
+                cached_parents=cached_parents,
+                cache_depth=level,
             )
 
             writer.add_scalar(f"phase2/level_{level}/loss", loss.item(), step)

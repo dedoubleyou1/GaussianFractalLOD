@@ -52,6 +52,10 @@ class NerfSyntheticDataset(Dataset):
 
             c2w = torch.tensor(frame["transform_matrix"], dtype=torch.float32)
             w2c = torch.linalg.inv(c2w)
+            # Convert OpenGL (NeRF) → OpenCV (gsplat) convention:
+            # flip Y and Z axes so objects in front have positive z
+            w2c[1, :] *= -1
+            w2c[2, :] *= -1
 
             h, w_px = rgb.shape[:2]
             focal = 0.5 * w_px / np.tan(0.5 * self.camera_angle_x)

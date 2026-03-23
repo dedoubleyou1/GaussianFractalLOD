@@ -16,21 +16,18 @@ from gaussianfractallod.derive import SplitVariables
 class SplitLevel(nn.Module):
     """Split variables for all nodes at one level of the tree."""
 
-    def __init__(self, num_nodes: int, sh_dim: int, axis_idx: int = 0):
+    def __init__(self, num_nodes: int, sh_dim: int):
         super().__init__()
         self.num_nodes = num_nodes
         self.sh_dim = sh_dim
 
         # Learnable split variables
         self.mass_logit = nn.Parameter(torch.zeros(num_nodes))
-        self.position_split = nn.Parameter(torch.zeros(num_nodes, 3))
+        # Random direction initialization — no cardinal axis bias
+        self.position_split = nn.Parameter(torch.randn(num_nodes, 3) * 0.1)
         # variance_split=0 maps to u3=sigmoid(0)=0.5 (uniform) in derive.py
         self.variance_split = nn.Parameter(torch.zeros(num_nodes, 3))
         self.color_split = nn.Parameter(torch.zeros(num_nodes, sh_dim))
-
-        # Initialize position split along cycling axis (X→Y→Z)
-        with torch.no_grad():
-            self.position_split[:, axis_idx] = 0.25
 
         # Occupancy: (num_nodes, 2) — [child_a_active, child_b_active]
         self.register_buffer(
@@ -78,8 +75,7 @@ class SplitTree(nn.Module):
             # is one child that becomes a node at the next level
             num_nodes = int(prev_level.occupancy.sum().item())
 
-        axis_idx = self.depth % 3  # Cycle X→Y→Z
-        level = SplitLevel(num_nodes, self.sh_dim, axis_idx)
+        level = SplitLevel(num_nodes, self.sh_dim)
         self.levels.append(level)
 
     def get_level_split_vars(self, level_idx: int) -> SplitVariables:

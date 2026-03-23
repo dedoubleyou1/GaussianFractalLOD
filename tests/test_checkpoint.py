@@ -37,7 +37,7 @@ def test_checkpoint_preserves_split_vars(tmp_path):
     tree = SplitTree(num_roots=2, sh_dim=3)
     tree.add_level()
     with torch.no_grad():
-        tree.levels[0].mass_logit.fill_(0.7)
+        tree.levels[0].cut_offset.fill_(0.7)
         tree.levels[0].color_split.fill_(0.1)
 
     path = tmp_path / "ckpt.pt"
@@ -45,6 +45,6 @@ def test_checkpoint_preserves_split_vars(tmp_path):
 
     _, loaded_tree, _ = load_checkpoint(path)
     torch.testing.assert_close(
-        loaded_tree.levels[0].mass_logit,
+        loaded_tree.levels[0].cut_offset,
         torch.tensor([0.7, 0.7]),
     )

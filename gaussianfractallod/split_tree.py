@@ -22,12 +22,11 @@ class SplitLevel(nn.Module):
         self.sh_dim = sh_dim
 
         # Learnable split variables
-        self.mass_logit = nn.Parameter(torch.zeros(num_nodes))
-        # Random direction initialization — no cardinal axis bias
-        self.position_split = nn.Parameter(torch.randn(num_nodes, 3) * 0.1)
-        # Variance partition ratio (pre-sigmoid): 3 values per axis
-        # sigmoid(0) = 0.5 → uniform split (each child gets half the budget)
-        self.variance_split = nn.Parameter(torch.zeros(num_nodes, 3))
+        # Cut plane normal in parent's local frame (random direction)
+        self.cut_direction = nn.Parameter(torch.randn(num_nodes, 3))
+        # Cut position along normal (0 = symmetric split)
+        self.cut_offset = nn.Parameter(torch.zeros(num_nodes))
+        # Color deviation
         self.color_split = nn.Parameter(torch.zeros(num_nodes, sh_dim))
 
         # Occupancy: (num_nodes, 2) — [child_a_active, child_b_active]
@@ -37,9 +36,8 @@ class SplitLevel(nn.Module):
 
     def get_split_vars(self) -> SplitVariables:
         return SplitVariables(
-            mass_logit=self.mass_logit,
-            position_split=self.position_split,
-            variance_split=self.variance_split,
+            cut_direction=self.cut_direction,
+            cut_offset=self.cut_offset,
             color_split=self.color_split,
         )
 
@@ -85,9 +83,8 @@ class SplitTree(nn.Module):
     def level_parameters(self, level_idx: int):
         """Yield learnable parameters for a specific level."""
         level = self.levels[level_idx]
-        yield level.mass_logit
-        yield level.position_split
-        yield level.variance_split
+        yield level.cut_direction
+        yield level.cut_offset
         yield level.color_split
 
     def get_occupancy(self, level_idx: int) -> torch.Tensor:

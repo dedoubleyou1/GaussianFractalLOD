@@ -40,19 +40,17 @@ def prune_level(
         Dict with counts: {'mass': n, 'convergence': n, 'opacity': n, 'total': n}
     """
     level = tree.levels[level_idx]
-    mass_logit = level.mass_logit.detach()
-    pi_a = torch.sigmoid(mass_logit)  # (N,)
-    pi_b = 1.0 - pi_a
-
     counts = {"mass": 0, "convergence": 0, "opacity": 0, "total": 0}
 
     with torch.no_grad():
         # --- 1. Split convergence: entire split is useless ---
         # If all split variables are near zero, children ≈ parent
-        pos_mag = level.position_split.detach().norm(dim=-1)      # (N,)
-        var_mag = level.variance_split.detach().abs().sum(dim=-1)  # (N,) deviation from 0 (uniform)
+        # Split magnitude: how much does this split deviate from "do nothing"?
+        # cut_offset ≈ 0 means symmetric split (minimal change)
+        # color_split ≈ 0 means children share parent's color
+        offset_mag = level.cut_offset.detach().abs()           # (N,)
         color_mag = level.color_split.detach().norm(dim=-1)    # (N,)
-        total_mag = pos_mag + var_mag + color_mag
+        total_mag = offset_mag + color_mag
 
         converged = total_mag < split_magnitude_threshold
         if converged.any():
@@ -61,33 +59,37 @@ def prune_level(
             counts["convergence"] = int(converged.sum().item())
 
         # --- 2. Mass fade-out: one child wants to vanish ---
-        # Only check nodes not already pruned by convergence
+        # Mass partition is derived from cut_offset via CDF
+        from gaussianfractallod.derive import _Phi
+        pi_left = _Phi(level.cut_offset.detach())
+        pi_right = 1.0 - pi_left
+
         active = level.occupancy[:, 0] | level.occupancy[:, 1]
 
-        prune_a = active & (pi_a < mass_threshold)
-        if prune_a.any():
-            level.occupancy[prune_a, 0] = False
-            counts["mass"] += int(prune_a.sum().item())
+        prune_right = active & (pi_right < mass_threshold)
+        if prune_right.any():
+            level.occupancy[prune_right, 0] = False
+            counts["mass"] += int(prune_right.sum().item())
 
-        prune_b = active & (pi_b < mass_threshold)
-        if prune_b.any():
-            level.occupancy[prune_b, 1] = False
-            counts["mass"] += int(prune_b.sum().item())
+        prune_left = active & (pi_left < mass_threshold)
+        if prune_left.any():
+            level.occupancy[prune_left, 1] = False
+            counts["mass"] += int(prune_left.sum().item())
 
         # --- 3. Low opacity: child is invisible ---
         if parent_opacities is not None:
-            eff_opacity_a = torch.sigmoid(parent_opacities) * pi_a
-            eff_opacity_b = torch.sigmoid(parent_opacities) * pi_b
+            eff_opacity_right = torch.sigmoid(parent_opacities) * pi_right
+            eff_opacity_left = torch.sigmoid(parent_opacities) * pi_left
 
-            low_opacity_a = level.occupancy[:, 0] & (eff_opacity_a < opacity_threshold)
-            if low_opacity_a.any():
-                level.occupancy[low_opacity_a, 0] = False
-                counts["opacity"] += int(low_opacity_a.sum().item())
+            low_opacity_right = level.occupancy[:, 0] & (eff_opacity_right < opacity_threshold)
+            if low_opacity_right.any():
+                level.occupancy[low_opacity_right, 0] = False
+                counts["opacity"] += int(low_opacity_right.sum().item())
 
-            low_opacity_b = level.occupancy[:, 1] & (eff_opacity_b < opacity_threshold)
-            if low_opacity_b.any():
-                level.occupancy[low_opacity_b, 1] = False
-                counts["opacity"] += int(low_opacity_b.sum().item())
+            low_opacity_left = level.occupancy[:, 1] & (eff_opacity_left < opacity_threshold)
+            if low_opacity_left.any():
+                level.occupancy[low_opacity_left, 1] = False
+                counts["opacity"] += int(low_opacity_left.sum().item())
 
         # --- Clean up: zero dead split vars, renormalize mass ---
         only_a = level.occupancy[:, 0] & ~level.occupancy[:, 1]
@@ -96,16 +98,18 @@ def prune_level(
         dead = only_a | only_b | neither
 
         if dead.any():
-            level.position_split[dead] = 0.0
-            level.variance_split[dead] = 0.0
+            level.cut_offset[dead] = 0.0
             level.color_split[dead] = 0.0
 
-        if only_a.any():
-            level.mass_logit[only_a] = 10.0
-        if only_b.any():
-            level.mass_logit[only_b] = -10.0
+        # Renormalize: push all mass to the surviving child via cut_offset
+        # Large positive offset → π_left ≈ 1 (left child gets all mass)
+        # Large negative offset → π_right ≈ 1 (right child gets all mass)
+        if only_a.any():  # only right child survives
+            level.cut_offset[only_a] = -10.0
+        if only_b.any():  # only left child survives
+            level.cut_offset[only_b] = 10.0
         if neither.any():
-            level.mass_logit[neither] = 0.0
+            level.cut_offset[neither] = 0.0
 
     counts["total"] = counts["mass"] + counts["convergence"] * 2 + counts["opacity"]
     return counts

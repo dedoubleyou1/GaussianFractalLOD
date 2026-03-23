@@ -173,9 +173,16 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, SplitT
             if step % 500 == 0:
                 logger.info(f"Level {level} step {step}: loss={loss.item():.6f}")
 
-        # Prune
-        pruned = prune_level(tree, level, threshold=cfg.prune_mass_threshold)
-        logger.info(f"Level {level}: pruned {pruned} children")
+        # Prune — check mass fade-out, split convergence, and low opacity
+        prune_stats = prune_level(
+            tree, level,
+            mass_threshold=cfg.prune_mass_threshold,
+        )
+        logger.info(
+            f"Level {level}: pruned {prune_stats['total']} "
+            f"(convergence={prune_stats['convergence']}, "
+            f"mass={prune_stats['mass']}, opacity={prune_stats['opacity']})"
+        )
 
         # Freeze this level's parameters
         for param in tree.level_parameters(level):

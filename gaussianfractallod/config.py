@@ -23,7 +23,7 @@ class Config:
     sh_degree: int = 3
 
     # Pruning
-    prune_mass_threshold: float = 0.01
+    prune_mass_threshold: float = 0.05
 
     # Loss
     ssim_weight: float = 0.2

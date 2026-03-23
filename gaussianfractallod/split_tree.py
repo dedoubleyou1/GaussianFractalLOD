@@ -25,8 +25,9 @@ class SplitLevel(nn.Module):
         self.mass_logit = nn.Parameter(torch.zeros(num_nodes))
         # Random direction initialization — no cardinal axis bias
         self.position_split = nn.Parameter(torch.randn(num_nodes, 3) * 0.1)
-        # variance_split=0 maps to u3=sigmoid(0)=0.5 (uniform) in derive.py
-        self.variance_split = nn.Parameter(torch.zeros(num_nodes, 3))
+        # Cholesky factor split: 6 values (delta to parent's L_flat)
+        # Initialized to zero = child A starts identical to parent
+        self.cov_split = nn.Parameter(torch.zeros(num_nodes, 6))
         self.color_split = nn.Parameter(torch.zeros(num_nodes, sh_dim))
 
         # Occupancy: (num_nodes, 2) — [child_a_active, child_b_active]
@@ -38,7 +39,7 @@ class SplitLevel(nn.Module):
         return SplitVariables(
             mass_logit=self.mass_logit,
             position_split=self.position_split,
-            variance_split=self.variance_split,
+            cov_split=self.cov_split,
             color_split=self.color_split,
         )
 
@@ -86,7 +87,7 @@ class SplitTree(nn.Module):
         level = self.levels[level_idx]
         yield level.mass_logit
         yield level.position_split
-        yield level.variance_split
+        yield level.cov_split
         yield level.color_split
 
     def get_occupancy(self, level_idx: int) -> torch.Tensor:

@@ -7,7 +7,7 @@ from gaussianfractallod.reconstruct import reconstruct
 def _make_roots(n=2, sh_dim=3):
     return Gaussian(
         means=torch.randn(n, 3),
-        scales=torch.zeros(n, 3),
+        L_flat=torch.zeros(n, 6),
         opacities=torch.ones(n, 1) * 0.8,
         sh_coeffs=torch.randn(n, sh_dim),
     )

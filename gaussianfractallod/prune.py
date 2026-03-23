@@ -38,7 +38,7 @@ def prune_level(
 
         if dead.any():
             level.position_split[dead] = 0.0
-            level.variance_split[dead] = 0.0
+            level.cov_split[dead] = 0.0
             level.color_split[dead] = 0.0
 
         if only_a.any():

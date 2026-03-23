@@ -21,7 +21,7 @@ def _apply_one_level(current: Gaussian, tree: SplitTree, level_idx: int) -> Gaus
     child_a, child_b = derive_children(current, split_vars)
 
     parts_means = []
-    parts_scales = []
+    parts_L_flat = []
     parts_opacities = []
     parts_sh = []
 
@@ -30,13 +30,13 @@ def _apply_one_level(current: Gaussian, tree: SplitTree, level_idx: int) -> Gaus
 
     if mask_a.any():
         parts_means.append(child_a.means[mask_a])
-        parts_scales.append(child_a.scales[mask_a])
+        parts_L_flat.append(child_a.L_flat[mask_a])
         parts_opacities.append(child_a.opacities[mask_a])
         parts_sh.append(child_a.sh_coeffs[mask_a])
 
     if mask_b.any():
         parts_means.append(child_b.means[mask_b])
-        parts_scales.append(child_b.scales[mask_b])
+        parts_L_flat.append(child_b.L_flat[mask_b])
         parts_opacities.append(child_b.opacities[mask_b])
         parts_sh.append(child_b.sh_coeffs[mask_b])
 
@@ -45,7 +45,7 @@ def _apply_one_level(current: Gaussian, tree: SplitTree, level_idx: int) -> Gaus
 
     return Gaussian(
         means=torch.cat(parts_means, dim=0),
-        scales=torch.cat(parts_scales, dim=0),
+        L_flat=torch.cat(parts_L_flat, dim=0),
         opacities=torch.cat(parts_opacities, dim=0),
         sh_coeffs=torch.cat(parts_sh, dim=0),
     )

@@ -61,7 +61,7 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, SplitT
         roots = init_roots(cfg.num_roots, sh_degree=sh_degree, device=device)
 
         optimizer = torch.optim.Adam(
-            [roots.means, roots.scales, roots.opacities, roots.sh_coeffs],
+            [roots.means, roots.L_flat, roots.opacities, roots.sh_coeffs],
             lr=cfg.root_lr,
         )
 
@@ -98,7 +98,7 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, SplitT
         # Freeze roots
         roots = Gaussian(
             means=roots.means.detach(),
-            scales=roots.scales.detach(),
+            L_flat=roots.L_flat.detach(),
             opacities=roots.opacities.detach(),
             sh_coeffs=roots.sh_coeffs.detach(),
         )

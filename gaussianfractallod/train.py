@@ -116,16 +116,22 @@ def _train_level_step(
     return loss.detach()
 
 
-def _get_level_scale(level: int, max_levels: int, min_scale: float = 1/64) -> float:
-    """Image scale for a given level. Finest level = 1.0, halved going coarser.
+def _get_level_scale(level: int, max_levels: int) -> float:
+    """Image scale for a given level. Finest level = full res, ~halving pixels going coarser.
 
-    Level max_levels = 1.0 (full res)
-    Level max_levels-1 = 0.5
-    ...
-    Clamped to min_scale (default 1/64 ≈ 12×12 for 800px images).
+    Resolution steps: 800, 600, 400, 300, 200, 150, 100, 75, 50, 35, ...
+    Roughly halving total pixels each step.
     """
-    scale = 1.0 / (2 ** (max_levels - level))
-    return max(scale, min_scale)
+    # Resolution steps from finest to coarsest
+    _RES_STEPS = [800, 600, 400, 300, 200, 150, 100, 75, 50, 35, 25, 20, 15, 12]
+
+    steps_from_top = max_levels - level
+    if steps_from_top < len(_RES_STEPS):
+        res = _RES_STEPS[steps_from_top]
+    else:
+        res = _RES_STEPS[-1]
+
+    return res / 800.0
 
 
 def _load_dataset_for_level(cfg: Config, level: int) -> NerfSyntheticDataset:

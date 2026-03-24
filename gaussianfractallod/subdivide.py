@@ -1,10 +1,14 @@
 """Subdivide parent Gaussians into 8 children via 3 sequential binary cuts.
 
-Uses truncated Gaussian moments for physically plausible initialization.
-Children are returned as independent Gaussians — not constrained by parents.
+Uses least-squares optimal formulas for alpha compositing (not statistical
+mixture). Children are sized and positioned to minimize the integrated
+squared error between the alpha-composited children and the parent.
 
-Each parent is cut along its local X, Y, Z axes (via Cholesky frame),
-producing 2→4→8 children. Symmetric cuts (d=0) give equal mass.
+Formulas (derived from numerical optimization across opacity/spread space):
+  σ_c = σ_parent · √(1 - f²/4) · (1 - 0.124 · α_p²)
+  α_c = [1 - √(1 - α_p)] · (0.932 + 0.114 · f)
+
+where f = spread factor (children at ±f/2 in parent's local frame).
 """
 
 import torch
@@ -12,29 +16,24 @@ import math
 from gaussianfractallod.gaussian import Gaussian
 
 
-# For symmetric cut (d=0): λ = φ(0)/Φ(0) = (1/√2π) / 0.5 = √(2/π)
-_LAMBDA_SYMMETRIC = math.sqrt(2.0 / math.pi)
-# Compression factor: c = λ² = 2/π
-_C_SYMMETRIC = 2.0 / math.pi
+# Spread factor: children displaced ±f/2 in parent's local frame per cut axis
+SPREAD_FACTOR = 1.0
 
 
 def subdivide_to_8(parents: Gaussian) -> Gaussian:
     """Subdivide each parent Gaussian into 8 children.
 
-    Applies 3 sequential symmetric binary cuts along the parent's
-    local X, Y, Z axes. Each cut halves each Gaussian along one axis
-    using truncated Gaussian moment-matching.
+    Applies 3 sequential binary cuts along the parent's local X, Y, Z axes.
+    Each cut uses alpha-compositing-aware formulas for child size and opacity.
 
     Args:
         parents: N parent Gaussians.
 
     Returns:
-        8N child Gaussians, initialized with plausible positions,
-        covariances, and opacities from the truncated moments.
+        8N child Gaussians.
     """
     current = parents
 
-    # 3 sequential cuts: local X, Y, Z
     for axis in range(3):
         current = _binary_cut_along_axis(current, axis)
 
@@ -42,49 +41,42 @@ def subdivide_to_8(parents: Gaussian) -> Gaussian:
 
 
 def _binary_cut_along_axis(gaussians: Gaussian, axis: int) -> Gaussian:
-    """Split each Gaussian into 2 along a local axis using truncated moments.
+    """Split each Gaussian into 2 along a local axis.
 
-    For a symmetric cut (d=0) along direction e_axis in local frame:
-      - Each child gets half the opacity
-      - Means displaced by ±λ along the axis (in parent's local frame)
-      - Covariance compressed along the cut axis, unchanged perpendicular
-
-    Args:
-        gaussians: N Gaussians.
-        axis: 0=X, 1=Y, 2=Z in parent's local Cholesky frame.
-
-    Returns:
-        2N Gaussians (right half then left half, interleaved).
+    Uses least-squares optimal formulas for alpha compositing:
+    - σ_c accounts for alpha compositing nonlinearity
+    - α_c matches center opacity exactly under alpha compositing
     """
     N = gaussians.num_gaussians
     device = gaussians.means.device
+    f = SPREAD_FACTOR
 
     # Get parent's Cholesky factor
     L_p = gaussians.L_matrix()  # (N, 3, 3)
 
-    # Cut direction: axis-th basis vector in local frame
-    # Displacement in world = L_p @ e_axis = L_p[:, :, axis]
-    displacement_world = L_p[:, :, axis]  # (N, 3)
+    # Displacement in world = ±(f/2) * L_p[:, :, axis]
+    displacement_world = (f / 2.0) * L_p[:, :, axis]  # (N, 3)
+    mu_right = gaussians.means + displacement_world
+    mu_left = gaussians.means - displacement_world
 
-    # Symmetric cut: children at ±λ along the cut direction
-    offset = _LAMBDA_SYMMETRIC * displacement_world  # (N, 3)
-    mu_right = gaussians.means + offset
-    mu_left = gaussians.means - offset
+    # Child opacity: α_c = [1 - √(1 - α_p)] · (0.932 + 0.114·f)
+    # This matches center opacity under alpha compositing
+    alpha_p = torch.sigmoid(gaussians.opacities)  # (N, 1)
+    alpha_c = (1.0 - torch.sqrt((1.0 - alpha_p).clamp(min=1e-8))) * (0.932 + 0.114 * f)
+    alpha_c = alpha_c.clamp(min=1e-6, max=1.0 - 1e-6)
+    child_logit = torch.log(alpha_c / (1.0 - alpha_c))
 
-    # Each binary cut halves the opacity (in probability space).
-    # After 3 cuts total: each child has parent_opacity / 8.
-    parent_prob = torch.sigmoid(gaussians.opacities)
-    child_prob = (0.5 * parent_prob).clamp(min=1e-6)
-    child_logit = torch.log(child_prob / (1.0 - child_prob + 1e-8))
+    # Child scale: σ_c = σ_p · √(1 - f²/4) · (1 - 0.124·α_p²)
+    # In Cholesky terms: scale the axis by this factor
+    scale_base = math.sqrt(max(1.0 - f * f / 4.0, 0.01))
+    alpha_correction = (1.0 - 0.124 * alpha_p ** 2)  # (N, 1)
+    scale_factor = scale_base * alpha_correction  # (N, 1)
 
-    # Child covariance: compress along cut axis, preserve perpendicular
-    # In local frame: Σ_child = I - c * e_axis @ e_axis^T
-    # So the axis-th scale factor is √(1-c), others stay 1
-    # L_child = L_parent @ diag(scale)
+    # L_child = L_parent @ diag(scale) where scale[axis] = scale_factor
     scale = torch.ones(N, 3, device=device)
-    scale[:, axis] = math.sqrt(1.0 - _C_SYMMETRIC)  # ≈ 0.604
+    scale[:, axis:axis+1] = scale_factor  # broadcast (N, 1) into column
 
-    L_right = L_p * scale.unsqueeze(-2)  # (N, 3, 3) * (N, 1, 3)
+    L_right = L_p * scale.unsqueeze(-2)
     L_left = L_right  # Same covariance for symmetric cut
 
     L_right_flat = _L_to_flat(L_right)

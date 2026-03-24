@@ -89,6 +89,7 @@ class GaussianTree(nn.Module):
 
         Each parent Gaussian produces 8 children via 3 sequential
         binary cuts. Children are detached and set as trainable parameters.
+        Also computes expected offset magnitude per child for regularization.
         """
         assert self.depth > 0, "Must set root level first"
 
@@ -99,6 +100,12 @@ class GaussianTree(nn.Module):
         with torch.no_grad():
             children = subdivide_to_8(parents)
 
+            # Compute expected offset: distance from parent mean to child mean
+            # Parents have N Gaussians, children have 8N
+            # Repeat parent means 8× to align with children
+            parent_means_repeated = parents.means.repeat_interleave(8, dim=0)
+            expected_offset = (children.means - parent_means_repeated).norm(dim=-1)
+
         # Create trainable level from subdivision
         new_level = GaussianLevel(
             means=children.means.detach().clone(),
@@ -106,6 +113,8 @@ class GaussianTree(nn.Module):
             opacities=children.opacities.detach().clone(),
             sh_coeffs=children.sh_coeffs.detach().clone(),
         )
+        # Store expected offset for position regularization
+        new_level.register_buffer("expected_offset", expected_offset.detach().clone())
         self.levels.append(new_level)
 
     def get_level_gaussians(self, level: int) -> Gaussian:

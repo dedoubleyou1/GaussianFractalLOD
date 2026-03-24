@@ -41,15 +41,16 @@ def _train_level_step(
         background=background,
     )
 
+    loss = rendering_loss(rendered, gt_image, ssim_weight=ssim_weight)
+
     # Regularization: scale-independent penalties
     level_module = tree.levels[level]
 
-    # Position: Mahalanobis distance (drift in units of Gaussian's own size)
-    # drift_local = L_init^-1 @ (means - init_means)
-    init_L = level_module.init_L_matrix  # (N, 3, 3) precomputed
-    drift_world = (level_module.means - level_module.init_means).unsqueeze(-1)  # (N, 3, 1)
-    drift_local = torch.linalg.solve_triangular(init_L, drift_world, upper=False)
-    pos_reg = drift_local.squeeze(-1).pow(2).sum(dim=-1).mean()
+    # Position: drift as fraction of expected offset from parent
+    # Dimensionless: same penalty for drifting 50% of expected offset at any level
+    drift = (level_module.means - level_module.init_means).norm(dim=-1)  # (N,)
+    normalized_drift = drift / (level_module.expected_offset + 1e-8)  # (N,)
+    pos_reg = normalized_drift.pow(2).mean()
 
     # Scale: exponential cost for deviating from initial scale (in log-ratio)
     diag_idx = [0, 2, 5]

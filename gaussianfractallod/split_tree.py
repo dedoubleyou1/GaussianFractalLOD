@@ -24,6 +24,10 @@ class GaussianLevel(nn.Module):
         self.opacities = nn.Parameter(opacities)
         self.sh_coeffs = nn.Parameter(sh_coeffs)
 
+        # Store initial values for regularization (frozen, non-parameter)
+        self.register_buffer("init_means", means.detach().clone())
+        self.register_buffer("init_L_flat", L_flat.detach().clone())
+
     @property
     def num_gaussians(self) -> int:
         return self.means.shape[0]

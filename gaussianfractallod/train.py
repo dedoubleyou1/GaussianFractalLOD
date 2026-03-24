@@ -41,24 +41,20 @@ def _train_level_step(
         background=background,
     )
 
-    loss = rendering_loss(rendered, gt_image, ssim_weight=ssim_weight)
-    loss.backward()
-    optimizer.step()
-
-    # Clamp L_flat to prevent degenerate Gaussians
-    # Diagonal (log-scale): min=-5 (no needles), max=5 (no giants)
-    # Off-diagonal: clamp to prevent extreme shear
+    # Regularization: exponential cost for scale growth and position drift
     level_module = tree.levels[level]
-    with torch.no_grad():
-        L = level_module.L_flat
-        L[:, 0].clamp_(min=-5.0, max=5.0)  # log(l00)
-        L[:, 1].clamp_(min=-5.0, max=5.0)  # l10
-        L[:, 2].clamp_(min=-5.0, max=5.0)  # log(l11)
-        L[:, 3].clamp_(min=-5.0, max=5.0)  # l20
-        L[:, 4].clamp_(min=-5.0, max=5.0)  # l21
-        L[:, 5].clamp_(min=-5.0, max=5.0)  # log(l22)
-        # Clamp opacity to reasonable range
-        level_module.opacities.clamp_(min=-5.0, max=10.0)
+
+    # Scale regularization: penalize large Gaussians (exponential in log-space = linear in actual scale)
+    diag_entries = gaussians.L_flat[:, [0, 2, 5]]
+    scale_reg = torch.exp(diag_entries).mean()
+
+    # Position regularization: penalize drift from initialization
+    pos_drift = (level_module.means - level_module.init_means).pow(2).sum(dim=-1)
+    pos_reg = pos_drift.mean()
+
+    total_loss = loss + 0.01 * scale_reg + 0.01 * pos_reg
+    total_loss.backward()
+    optimizer.step()
 
     return loss.detach()
 

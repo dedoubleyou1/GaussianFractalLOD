@@ -41,16 +41,20 @@ def _train_level_step(
         background=background,
     )
 
-    # Regularization: exponential cost for scale growth and position drift
+    # Regularization: scale-independent penalties
     level_module = tree.levels[level]
 
-    # Scale regularization: penalize large Gaussians (exponential in log-space = linear in actual scale)
-    diag_entries = gaussians.L_flat[:, [0, 2, 5]]
-    scale_reg = torch.exp(diag_entries).mean()
+    # Position: Mahalanobis distance (drift in units of Gaussian's own size)
+    # drift_local = L_init^-1 @ (means - init_means)
+    init_L = level_module.init_L_matrix  # (N, 3, 3) precomputed
+    drift_world = (level_module.means - level_module.init_means).unsqueeze(-1)  # (N, 3, 1)
+    drift_local = torch.linalg.solve_triangular(init_L, drift_world, upper=False)
+    pos_reg = drift_local.squeeze(-1).pow(2).sum(dim=-1).mean()
 
-    # Position regularization: penalize drift from initialization
-    pos_drift = (level_module.means - level_module.init_means).pow(2).sum(dim=-1)
-    pos_reg = pos_drift.mean()
+    # Scale: exponential cost for deviating from initial scale (in log-ratio)
+    diag_idx = [0, 2, 5]
+    log_ratio = gaussians.L_flat[:, diag_idx] - level_module.init_L_flat[:, diag_idx]
+    scale_reg = torch.exp(log_ratio.abs()).mean()
 
     total_loss = loss + 0.01 * scale_reg + 0.01 * pos_reg
     total_loss.backward()

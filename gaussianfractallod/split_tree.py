@@ -28,6 +28,17 @@ class GaussianLevel(nn.Module):
         self.register_buffer("init_means", means.detach().clone())
         self.register_buffer("init_L_flat", L_flat.detach().clone())
 
+        # Precompute initial L matrix for Mahalanobis distance
+        N = means.shape[0]
+        init_L = torch.zeros(N, 3, 3, device=means.device, dtype=means.dtype)
+        init_L[:, 0, 0] = torch.exp(L_flat[:, 0].detach())
+        init_L[:, 1, 0] = L_flat[:, 1].detach()
+        init_L[:, 1, 1] = torch.exp(L_flat[:, 2].detach())
+        init_L[:, 2, 0] = L_flat[:, 3].detach()
+        init_L[:, 2, 1] = L_flat[:, 4].detach()
+        init_L[:, 2, 2] = torch.exp(L_flat[:, 5].detach())
+        self.register_buffer("init_L_matrix", init_L)
+
     @property
     def num_gaussians(self) -> int:
         return self.means.shape[0]

@@ -110,13 +110,29 @@ def _train_level_step(
     return loss.detach()
 
 
+def _get_level_scale(level: int, max_levels: int) -> float:
+    """Image scale for a given level. Finest level = 1.0, halved going coarser.
+
+    Level max_levels = 1.0 (full res)
+    Level max_levels-1 = 0.5
+    Level max_levels-2 = 0.25
+    ...
+    Level 0 = 1 / 2^max_levels
+    """
+    return 1.0 / (2 ** (max_levels - level))
+
+
+def _load_dataset_for_level(cfg: Config, level: int) -> NerfSyntheticDataset:
+    """Load dataset at appropriate resolution for this level."""
+    scale = _get_level_scale(level, cfg.max_levels)
+    dataset = NerfSyntheticDataset(cfg.data_dir, split="train", scale=scale)
+    return dataset
+
+
 def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, GaussianTree]:
     """Run full training pipeline."""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: {device}")
-
-    dataset = NerfSyntheticDataset(cfg.data_dir, split="train", scale=cfg.image_scale)
-    logger.info(f"Loaded {len(dataset)} training images")
 
     sh_degree = cfg.sh_degree
     background = torch.tensor(cfg.background_color, device=device)
@@ -139,7 +155,12 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, Gaussi
     # Phase 1: Root fitting
     # ========================
     if start_phase <= 1:
-        logger.info(f"Phase 1: Fitting {cfg.num_roots} root Gaussians")
+        root_scale = _get_level_scale(0, cfg.max_levels)
+        dataset_root = _load_dataset_for_level(cfg, 0)
+        logger.info(
+            f"Phase 1: Fitting {cfg.num_roots} root Gaussians "
+            f"(resolution scale={root_scale:.3f})"
+        )
         roots = init_roots(cfg.num_roots, sh_degree=sh_degree, device=device)
 
         optimizer = torch.optim.Adam(
@@ -151,8 +172,8 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, Gaussi
         plateau_count = 0
 
         for step in range(cfg.root_iterations):
-            idx = random.randint(0, len(dataset) - 1)
-            gt_image, camera = dataset[idx]
+            idx = random.randint(0, len(dataset_root) - 1)
+            gt_image, camera = dataset_root[idx]
             gt_image = gt_image.to(device)
             camera = {k: v.to(device) if isinstance(v, torch.Tensor) else v
                       for k, v in camera.items()}
@@ -222,11 +243,15 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, Gaussi
         level_module = tree.levels[current_level]
         num_gaussians = level_module.num_gaussians
 
+        # Load dataset at appropriate resolution for this level
+        level_scale = _get_level_scale(current_level, cfg.max_levels)
+        dataset = _load_dataset_for_level(cfg, current_level)
+
         # Exponential iterations: base * 2^(level-1)
         level_iters = cfg.level_base_iterations * (2 ** (current_level - 1))
         logger.info(
             f"Level {current_level}: {num_gaussians} Gaussians, "
-            f"{level_iters} iterations"
+            f"{level_iters} iterations, scale={level_scale:.3f}"
         )
 
         # Per-parameter optimizer

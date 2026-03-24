@@ -35,6 +35,7 @@ class Config:
     # Regularization
     reg_scale_weight: float = 0.01
     reg_position_weight: float = 0.01
+    reg_aspect_weight: float = 0.01
 
     # SH degree
     sh_degree: int = 3

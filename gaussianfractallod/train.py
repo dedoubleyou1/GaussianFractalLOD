@@ -95,10 +95,16 @@ def _train_level_step(
     log_ratio = gaussians.L_flat[:, diag_idx] - level_module.init_L_flat[:, diag_idx]
     scale_reg = torch.exp(log_ratio.abs()).mean()
 
+    # Aspect ratio: penalize difference between largest and smallest axes
+    # Pushes toward isotropic regardless of initialization
+    diag_vals = gaussians.L_flat[:, diag_idx]
+    aspect_reg = (diag_vals.max(dim=-1).values - diag_vals.min(dim=-1).values).pow(2).mean()
+
     total_loss = (
         loss
         + cfg.reg_scale_weight * scale_reg
         + cfg.reg_position_weight * pos_reg
+        + cfg.reg_aspect_weight * aspect_reg
     )
     total_loss.backward()
 

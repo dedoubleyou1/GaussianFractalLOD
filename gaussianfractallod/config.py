@@ -16,7 +16,7 @@ class Config:
     # Level fitting (Phase 2) — each level has 8× more Gaussians
     max_levels: int = 6  # 8^6 = 262K max Gaussians from 1 root
     level_lr: float = 5e-3
-    level_iterations: int = 5000
+    level_iterations: int = 1500  # multiplied by level number (1500, 3000, 4500, ...)
     level_convergence_window: int = 500
 
     # SH degree

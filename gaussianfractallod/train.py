@@ -149,7 +149,13 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, Gaussi
 
         current_level = level_idx + 1  # level 0 = roots, level 1 = first subdivision
         num_gaussians = tree.levels[current_level].num_gaussians
-        logger.info(f"Level {current_level}: {num_gaussians} Gaussians (initialized from subdivision)")
+
+        # Scale iterations: deeper levels get more training time
+        level_iters = cfg.level_iterations * current_level
+        logger.info(
+            f"Level {current_level}: {num_gaussians} Gaussians, "
+            f"{level_iters} iterations (initialized from subdivision)"
+        )
 
         optimizer = torch.optim.Adam(
             tree.level_parameters(current_level),
@@ -159,7 +165,7 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, Gaussi
         best_loss = float("inf")
         plateau_count = 0
 
-        for step in range(cfg.level_iterations):
+        for step in range(level_iters):
             idx = random.randint(0, len(dataset) - 1)
             gt_image, camera = dataset[idx]
             gt_image = gt_image.to(device)

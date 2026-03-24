@@ -97,13 +97,20 @@ class GaussianTree(nn.Module):
         parent_level = self.levels[-1]
         parents = parent_level.get_gaussians()
 
+        N_parents = parents.num_gaussians
+
         with torch.no_grad():
             if split_mask is None or split_mask.all():
                 # Subdivide all parents
                 children = subdivide_to_8(parents)
                 parent_means_repeated = parents.means.repeat_interleave(8, dim=0)
+                # Parent index: [0,0,0,0,0,0,0,0, 1,1,1,1,1,1,1,1, ...]
+                parent_indices = torch.arange(N_parents, device=parents.means.device).repeat_interleave(8)
             else:
                 # Split only selected parents, keep the rest as-is
+                split_indices = torch.where(split_mask)[0]  # original indices of split parents
+                keep_indices = torch.where(~split_mask)[0]
+
                 split_parents = Gaussian(
                     means=parents.means[split_mask],
                     L_flat=parents.L_flat[split_mask],
@@ -129,13 +136,15 @@ class GaussianTree(nn.Module):
                 parts_op = []
                 parts_sh = []
                 parts_parent_means = []
+                parts_parent_idx = []
 
                 if keep_parents.num_gaussians > 0:
                     parts_means.append(keep_parents.means)
                     parts_L.append(keep_parents.L_flat)
                     parts_op.append(keep_parents.opacities)
                     parts_sh.append(keep_parents.sh_coeffs)
-                    parts_parent_means.append(keep_parents.means)  # offset = 0
+                    parts_parent_means.append(keep_parents.means)
+                    parts_parent_idx.append(keep_indices)  # kept parent maps to itself
 
                 if split_children is not None:
                     parts_means.append(split_children.means)
@@ -143,6 +152,8 @@ class GaussianTree(nn.Module):
                     parts_op.append(split_children.opacities)
                     parts_sh.append(split_children.sh_coeffs)
                     parts_parent_means.append(split_parent_means)
+                    # Each split parent's original index, repeated 8×
+                    parts_parent_idx.append(split_indices.repeat_interleave(8))
 
                 children = Gaussian(
                     means=torch.cat(parts_means, dim=0),
@@ -151,9 +162,9 @@ class GaussianTree(nn.Module):
                     sh_coeffs=torch.cat(parts_sh, dim=0),
                 )
                 parent_means_repeated = torch.cat(parts_parent_means, dim=0)
+                parent_indices = torch.cat(parts_parent_idx, dim=0)
 
             expected_offset = (children.means - parent_means_repeated).norm(dim=-1)
-            # Kept parents have zero offset — set a reasonable default
             expected_offset = expected_offset.clamp(min=1e-4)
 
         new_level = GaussianLevel(
@@ -163,6 +174,7 @@ class GaussianTree(nn.Module):
             sh_coeffs=children.sh_coeffs.detach().clone(),
         )
         new_level.register_buffer("expected_offset", expected_offset.detach().clone())
+        new_level.register_buffer("parent_indices", parent_indices.detach().clone())
         self.levels.append(new_level)
 
     def get_level_gaussians(self, level: int) -> Gaussian:

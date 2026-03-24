@@ -85,10 +85,14 @@ def derive_children(
     alpha_left = pi_left * parent.opacities
     alpha_right = pi_right * parent.opacities
 
+    # Clamp cut_offset to prevent extreme hazard rates
+    # Beyond ±3, the truncated moments become numerically unstable
+    d = d.clamp(-3.0, 3.0)
+
     # Hazard rates (inverse Mills ratios)
     phi_d = _phi(d)  # (N,)
-    lambda_right = phi_d / pi_right.squeeze(-1)   # (N,)
-    lambda_left = phi_d / pi_left.squeeze(-1)     # (N,)
+    lambda_right = (phi_d / pi_right.squeeze(-1)).clamp(max=5.0)   # (N,)
+    lambda_left = (phi_d / pi_left.squeeze(-1)).clamp(max=5.0)     # (N,)
 
     # Child means in parent's local frame
     # μ_right = +λ_R · n,  μ_left = -λ_L · n

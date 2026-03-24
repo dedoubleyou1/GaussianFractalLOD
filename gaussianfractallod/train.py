@@ -45,6 +45,16 @@ def _train_level_step(
     loss.backward()
     optimizer.step()
 
+    # Clamp L_flat to prevent needle Gaussians
+    # Diagonal entries (indices 0, 2, 5) are log-scale — clamp minimum
+    # exp(-5) ≈ 0.007, so Gaussians can't be thinner than ~1/150th of their widest
+    level_module = tree.levels[level]
+    with torch.no_grad():
+        L = level_module.L_flat
+        L[:, 0].clamp_(min=-5.0)
+        L[:, 2].clamp_(min=-5.0)
+        L[:, 5].clamp_(min=-5.0)
+
     return loss.detach()
 
 

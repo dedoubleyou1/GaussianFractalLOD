@@ -1,7 +1,7 @@
 """Hierarchical Gaussian tree: each level stores independently trainable Gaussians.
 
 Level 0: root Gaussians (trained in Phase 1)
-Level L: 8× more Gaussians than level L-1 (initialized via subdivision)
+Level L: children of selected parents from level L-1 (adaptive splitting)
 
 Each level is independently renderable for LoD.
 Children are initialized from parent subdivision but train freely.
@@ -24,20 +24,13 @@ class GaussianLevel(nn.Module):
         self.opacities = nn.Parameter(opacities)
         self.sh_coeffs = nn.Parameter(sh_coeffs)
 
-        # Store initial values for regularization (frozen, non-parameter)
+        # Store initial values for regularization
         self.register_buffer("init_means", means.detach().clone())
         self.register_buffer("init_L_flat", L_flat.detach().clone())
 
-        # Precompute initial L matrix for Mahalanobis distance
-        N = means.shape[0]
-        init_L = torch.zeros(N, 3, 3, device=means.device, dtype=means.dtype)
-        init_L[:, 0, 0] = torch.exp(L_flat[:, 0].detach())
-        init_L[:, 1, 0] = L_flat[:, 1].detach()
-        init_L[:, 1, 1] = torch.exp(L_flat[:, 2].detach())
-        init_L[:, 2, 0] = L_flat[:, 3].detach()
-        init_L[:, 2, 1] = L_flat[:, 4].detach()
-        init_L[:, 2, 2] = torch.exp(L_flat[:, 5].detach())
-        self.register_buffer("init_L_matrix", init_L)
+        # Gradient accumulator for adaptive splitting (not a parameter)
+        self.register_buffer("grad_accum", torch.zeros(means.shape[0]))
+        self.register_buffer("grad_count", torch.zeros(means.shape[0]))
 
     @property
     def num_gaussians(self) -> int:
@@ -51,17 +44,24 @@ class GaussianLevel(nn.Module):
             sh_coeffs=self.sh_coeffs,
         )
 
-    def parameters_list(self):
-        """Return list of parameters for optimizer."""
-        return [self.means, self.L_flat, self.opacities, self.sh_coeffs]
+    def accumulate_grad(self) -> None:
+        """Accumulate position gradient magnitude for split decisions."""
+        if self.means.grad is not None:
+            self.grad_accum += self.means.grad.detach().norm(dim=-1)
+            self.grad_count += 1
+
+    def avg_grad(self) -> torch.Tensor:
+        """Average gradient magnitude per Gaussian."""
+        return self.grad_accum / (self.grad_count + 1e-8)
+
+    def reset_opacity(self, value: float = -2.2) -> None:
+        """Reset all opacities to a low value (inverse_sigmoid(0.1) ≈ -2.2)."""
+        with torch.no_grad():
+            self.opacities.fill_(value)
 
 
 class GaussianTree(nn.Module):
-    """Hierarchical tree of Gaussian levels.
-
-    Each level is independently renderable. Children are initialized
-    from parent subdivision (8× per parent) but train freely.
-    """
+    """Hierarchical tree of Gaussian levels."""
 
     def __init__(self):
         super().__init__()
@@ -79,57 +79,103 @@ class GaussianTree(nn.Module):
             opacities=roots.opacities.detach().clone(),
             sh_coeffs=roots.sh_coeffs.detach().clone(),
         )
-        # Freeze root level
         for p in level.parameters():
             p.requires_grad_(False)
         self.levels.append(level)
 
-    def add_level(self) -> None:
-        """Add a new level by subdividing the current finest level.
+    def add_level(self, split_mask: torch.Tensor | None = None) -> None:
+        """Add a new level by subdividing selected parents.
 
-        Each parent Gaussian produces 8 children via 3 sequential
-        binary cuts. Children are detached and set as trainable parameters.
-        Also computes expected offset magnitude per child for regularization.
+        Args:
+            split_mask: (N,) bool tensor. If provided, only parents where
+                mask is True are subdivided into 8 children. Parents where
+                mask is False are carried forward as-is (kept at this level).
+                If None, all parents are subdivided.
         """
         assert self.depth > 0, "Must set root level first"
 
         parent_level = self.levels[-1]
         parents = parent_level.get_gaussians()
 
-        # Subdivide: N parents → 8N children
         with torch.no_grad():
-            children = subdivide_to_8(parents)
+            if split_mask is None or split_mask.all():
+                # Subdivide all parents
+                children = subdivide_to_8(parents)
+                parent_means_repeated = parents.means.repeat_interleave(8, dim=0)
+            else:
+                # Split only selected parents, keep the rest as-is
+                split_parents = Gaussian(
+                    means=parents.means[split_mask],
+                    L_flat=parents.L_flat[split_mask],
+                    opacities=parents.opacities[split_mask],
+                    sh_coeffs=parents.sh_coeffs[split_mask],
+                )
+                keep_parents = Gaussian(
+                    means=parents.means[~split_mask],
+                    L_flat=parents.L_flat[~split_mask],
+                    opacities=parents.opacities[~split_mask],
+                    sh_coeffs=parents.sh_coeffs[~split_mask],
+                )
 
-            # Compute expected offset: distance from parent mean to child mean
-            # Parents have N Gaussians, children have 8N
-            # Repeat parent means 8× to align with children
-            parent_means_repeated = parents.means.repeat_interleave(8, dim=0)
+                if split_parents.num_gaussians > 0:
+                    split_children = subdivide_to_8(split_parents)
+                    split_parent_means = split_parents.means.repeat_interleave(8, dim=0)
+                else:
+                    split_children = None
+
+                # Combine: kept parents + new children
+                parts_means = []
+                parts_L = []
+                parts_op = []
+                parts_sh = []
+                parts_parent_means = []
+
+                if keep_parents.num_gaussians > 0:
+                    parts_means.append(keep_parents.means)
+                    parts_L.append(keep_parents.L_flat)
+                    parts_op.append(keep_parents.opacities)
+                    parts_sh.append(keep_parents.sh_coeffs)
+                    parts_parent_means.append(keep_parents.means)  # offset = 0
+
+                if split_children is not None:
+                    parts_means.append(split_children.means)
+                    parts_L.append(split_children.L_flat)
+                    parts_op.append(split_children.opacities)
+                    parts_sh.append(split_children.sh_coeffs)
+                    parts_parent_means.append(split_parent_means)
+
+                children = Gaussian(
+                    means=torch.cat(parts_means, dim=0),
+                    L_flat=torch.cat(parts_L, dim=0),
+                    opacities=torch.cat(parts_op, dim=0),
+                    sh_coeffs=torch.cat(parts_sh, dim=0),
+                )
+                parent_means_repeated = torch.cat(parts_parent_means, dim=0)
+
             expected_offset = (children.means - parent_means_repeated).norm(dim=-1)
+            # Kept parents have zero offset — set a reasonable default
+            expected_offset = expected_offset.clamp(min=1e-4)
 
-        # Create trainable level from subdivision
         new_level = GaussianLevel(
             means=children.means.detach().clone(),
             L_flat=children.L_flat.detach().clone(),
             opacities=children.opacities.detach().clone(),
             sh_coeffs=children.sh_coeffs.detach().clone(),
         )
-        # Store expected offset for position regularization
         new_level.register_buffer("expected_offset", expected_offset.detach().clone())
         self.levels.append(new_level)
 
     def get_level_gaussians(self, level: int) -> Gaussian:
-        """Get Gaussians at a specific level."""
         return self.levels[level].get_gaussians()
 
     def level_parameters(self, level: int):
-        """Yield trainable parameters for a specific level."""
-        return self.levels[level].parameters_list()
+        return [
+            self.levels[level].means,
+            self.levels[level].L_flat,
+            self.levels[level].opacities,
+            self.levels[level].sh_coeffs,
+        ]
 
     def get_gaussians_at_depth(self, target_depth: int) -> Gaussian:
-        """Get Gaussians for rendering at a target depth.
-
-        Returns the Gaussians at the specified level (0-indexed).
-        Level 0 = roots, level 1 = first subdivision, etc.
-        """
         actual_depth = min(target_depth, self.depth - 1)
         return self.levels[actual_depth].get_gaussians()

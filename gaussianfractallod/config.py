@@ -8,22 +8,36 @@ class Config:
     image_scale: float = 1.0
 
     # Root fitting (Phase 1)
-    num_roots: int = 32
+    num_roots: int = 1
     root_lr: float = 1e-3
     root_iterations: int = 10000
     root_convergence_window: int = 1000
 
-    # Level fitting (Phase 2) — each level has 8× more Gaussians
-    max_levels: int = 6  # 8^6 = 262K max Gaussians from 1 root
-    level_lr: float = 5e-3
-    level_iterations: int = 1500  # multiplied by level number (1500, 3000, 4500, ...)
+    # Level fitting (Phase 2) — each level has up to 8× more Gaussians
+    max_levels: int = 6
+    level_base_iterations: int = 500  # doubled each level: 500, 1000, 2000, 4000, 8000, 16000
     level_convergence_window: int = 500
+
+    # Per-parameter learning rates (matching 3DGS conventions)
+    lr_means: float = 1.6e-4       # position — low, with decay
+    lr_means_final: float = 1.6e-6  # position decays 100×
+    lr_L_flat: float = 5e-3         # covariance (scale+rotation)
+    lr_opacities: float = 2.5e-2    # opacity — high
+    lr_sh_coeffs: float = 2.5e-3    # SH DC color
+
+    # Opacity reset
+    opacity_reset_interval: int = 3000  # reset opacity every N steps
+    opacity_reset_value: float = -2.2   # inverse_sigmoid(0.1)
+
+    # Adaptive splitting
+    split_grad_threshold: float = 0.0002  # only split Gaussians with grad above this
+
+    # Regularization
+    reg_scale_weight: float = 0.01
+    reg_position_weight: float = 0.01
 
     # SH degree
     sh_degree: int = 3
-
-    # Pruning
-    prune_mass_threshold: float = 0.05
 
     # Loss
     ssim_weight: float = 0.2

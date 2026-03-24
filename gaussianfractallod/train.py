@@ -1,5 +1,15 @@
-"""Full training orchestrator: Phase 1 (roots) + Phase 2 (levels)."""
+"""Full training orchestrator: Phase 1 (roots) + Phase 2 (levels).
 
+Implements 3DGS-style training techniques:
+- Per-parameter learning rates
+- Exponential position LR decay
+- Periodic opacity reset
+- Adaptive splitting based on gradient accumulation
+- Scale and position regularization
+- Exponentially increasing iterations per level
+"""
+
+import math
 import torch
 import random
 import logging
@@ -18,13 +28,39 @@ from gaussianfractallod.checkpoint import save_checkpoint, load_checkpoint
 logger = logging.getLogger(__name__)
 
 
+def _get_position_lr(cfg: Config, step: int, max_steps: int) -> float:
+    """Exponential decay for position learning rate (3DGS style)."""
+    if max_steps <= 1:
+        return cfg.lr_means
+    t = min(step / max_steps, 1.0)
+    log_lr = math.log(cfg.lr_means) * (1 - t) + math.log(cfg.lr_means_final) * t
+    return math.exp(log_lr)
+
+
+def _make_optimizer(cfg: Config, level_module) -> torch.optim.Adam:
+    """Create per-parameter-group optimizer (3DGS style)."""
+    return torch.optim.Adam([
+        {"params": [level_module.means], "lr": cfg.lr_means, "name": "means"},
+        {"params": [level_module.L_flat], "lr": cfg.lr_L_flat, "name": "L_flat"},
+        {"params": [level_module.opacities], "lr": cfg.lr_opacities, "name": "opacities"},
+        {"params": [level_module.sh_coeffs], "lr": cfg.lr_sh_coeffs, "name": "sh_coeffs"},
+    ], eps=1e-15)
+
+
+def _update_position_lr(optimizer: torch.optim.Adam, new_lr: float) -> None:
+    """Update position learning rate in optimizer."""
+    for param_group in optimizer.param_groups:
+        if param_group.get("name") == "means":
+            param_group["lr"] = new_lr
+
+
 def _train_level_step(
     tree: GaussianTree,
     level: int,
     gt_image: torch.Tensor,
     camera: dict,
     optimizer: torch.optim.Optimizer,
-    ssim_weight: float = 0.2,
+    cfg: Config,
     background: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Single training step for a level's Gaussians."""
@@ -41,35 +77,41 @@ def _train_level_step(
         background=background,
     )
 
-    loss = rendering_loss(rendered, gt_image, ssim_weight=ssim_weight)
+    loss = rendering_loss(rendered, gt_image, ssim_weight=cfg.ssim_weight)
 
-    # Regularization: scale-independent penalties
+    # Regularization
     level_module = tree.levels[level]
 
     # Position: drift as fraction of expected offset from parent
-    # Dimensionless: same penalty for drifting 50% of expected offset at any level
-    drift = (level_module.means - level_module.init_means).norm(dim=-1)  # (N,)
-    normalized_drift = drift / (level_module.expected_offset + 1e-8)  # (N,)
-    pos_reg = normalized_drift.pow(2).mean()
+    if hasattr(level_module, 'expected_offset'):
+        drift = (level_module.means - level_module.init_means).norm(dim=-1)
+        normalized_drift = drift / (level_module.expected_offset + 1e-8)
+        pos_reg = normalized_drift.pow(2).mean()
+    else:
+        pos_reg = torch.tensor(0.0, device=loss.device)
 
-    # Scale: exponential cost for deviating from initial scale (in log-ratio)
+    # Scale: exponential cost for deviating from initial (log-ratio)
     diag_idx = [0, 2, 5]
     log_ratio = gaussians.L_flat[:, diag_idx] - level_module.init_L_flat[:, diag_idx]
     scale_reg = torch.exp(log_ratio.abs()).mean()
 
-    total_loss = loss + 0.01 * scale_reg + 0.01 * pos_reg
+    total_loss = (
+        loss
+        + cfg.reg_scale_weight * scale_reg
+        + cfg.reg_position_weight * pos_reg
+    )
     total_loss.backward()
+
+    # Accumulate gradients for adaptive splitting decisions
+    level_module.accumulate_grad()
+
     optimizer.step()
 
     return loss.detach()
 
 
 def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, GaussianTree]:
-    """Run full training pipeline.
-
-    Returns:
-        (roots, tree): Trained model.
-    """
+    """Run full training pipeline."""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: {device}")
 
@@ -102,7 +144,7 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, Gaussi
 
         optimizer = torch.optim.Adam(
             [roots.means, roots.L_flat, roots.opacities, roots.sh_coeffs],
-            lr=cfg.root_lr,
+            lr=cfg.root_lr, eps=1e-15,
         )
 
         best_loss = float("inf")
@@ -156,32 +198,48 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, Gaussi
     # Phase 2: Level-by-level training
     # ========================
     for level_idx in range(start_level, cfg.max_levels):
-        logger.info(f"Phase 2: Training level {level_idx + 1}")
+        current_level = level_idx + 1
 
-        # Add new level (subdivides current finest into 8× children)
-        if tree.depth <= level_idx + 1:
-            tree.add_level()
+        # --- Adaptive splitting: use gradient signal from previous level ---
+        split_mask = None
+        prev_level = tree.levels[current_level - 1]
+        if current_level > 1 and prev_level.grad_count.sum() > 0:
+            avg_grads = prev_level.avg_grad()
+            split_mask = avg_grads > cfg.split_grad_threshold
+            n_split = split_mask.sum().item()
+            n_total = split_mask.shape[0]
+            logger.info(
+                f"Adaptive split: {n_split}/{n_total} parents selected "
+                f"(grad threshold={cfg.split_grad_threshold:.4f}, "
+                f"mean grad={avg_grads.mean():.4f})"
+            )
+
+        # Add new level
+        if tree.depth <= current_level:
+            tree.add_level(split_mask=split_mask)
         tree = tree.to(device)
 
-        current_level = level_idx + 1  # level 0 = roots, level 1 = first subdivision
-        num_gaussians = tree.levels[current_level].num_gaussians
+        level_module = tree.levels[current_level]
+        num_gaussians = level_module.num_gaussians
 
-        # Scale iterations: deeper levels get more training time
-        level_iters = cfg.level_iterations * current_level
+        # Exponential iterations: base * 2^(level-1)
+        level_iters = cfg.level_base_iterations * (2 ** (current_level - 1))
         logger.info(
             f"Level {current_level}: {num_gaussians} Gaussians, "
-            f"{level_iters} iterations (initialized from subdivision)"
+            f"{level_iters} iterations"
         )
 
-        optimizer = torch.optim.Adam(
-            tree.level_parameters(current_level),
-            lr=cfg.level_lr,
-        )
+        # Per-parameter optimizer
+        optimizer = _make_optimizer(cfg, level_module)
 
         best_loss = float("inf")
         plateau_count = 0
 
         for step in range(level_iters):
+            # Decay position LR
+            pos_lr = _get_position_lr(cfg, step, level_iters)
+            _update_position_lr(optimizer, pos_lr)
+
             idx = random.randint(0, len(dataset) - 1)
             gt_image, camera = dataset[idx]
             gt_image = gt_image.to(device)
@@ -191,10 +249,23 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, Gaussi
             loss = _train_level_step(
                 tree, current_level,
                 gt_image, camera, optimizer,
-                ssim_weight=cfg.ssim_weight, background=background,
+                cfg=cfg, background=background,
             )
 
             writer.add_scalar(f"phase2/level_{current_level}/loss", loss.item(), step)
+
+            # Opacity reset
+            if (step + 1) % cfg.opacity_reset_interval == 0 and step < level_iters - 100:
+                level_module.reset_opacity(cfg.opacity_reset_value)
+                # Reset optimizer state for opacity
+                for pg in optimizer.param_groups:
+                    if pg.get("name") == "opacities":
+                        for p in pg["params"]:
+                            state = optimizer.state.get(p)
+                            if state:
+                                state["exp_avg"].zero_()
+                                state["exp_avg_sq"].zero_()
+                logger.info(f"Level {current_level} step {step}: opacity reset")
 
             if loss.item() < best_loss - 1e-5:
                 best_loss = loss.item()

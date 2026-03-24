@@ -56,10 +56,10 @@ def test_subdivide_children_covariance_positive_definite():
     assert (eigvals > 0).all()
 
 
-def test_subdivide_opacity_sums_to_parent():
+def test_subdivide_children_inherit_parent_opacity():
     parent = _make_parent()
     children = subdivide_to_8(parent)
-    parent_prob = torch.sigmoid(parent.opacities).item()
-    children_prob = torch.sigmoid(children.opacities).sum().item()
-    # 8 children each with parent_prob/2^3 = parent_prob
-    assert abs(children_prob - parent_prob) < 0.01
+    # Children keep parent's opacity (optimizer adjusts during training)
+    parent_logit = parent.opacities[0, 0].item()
+    for i in range(children.num_gaussians):
+        assert abs(children.opacities[i, 0].item() - parent_logit) < 1e-5

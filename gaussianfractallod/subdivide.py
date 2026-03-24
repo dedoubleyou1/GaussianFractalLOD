@@ -71,14 +71,9 @@ def _binary_cut_along_axis(gaussians: Gaussian, axis: int) -> Gaussian:
     mu_right = gaussians.means + offset
     mu_left = gaussians.means - offset
 
-    # Each child gets half the opacity
-    half_opacity = gaussians.opacities - math.log(2.0)  # log-space: sigmoid(x - log2) = sigmoid(x)/2
-    # Actually opacity is pre-sigmoid, so: sigmoid(α_child) = 0.5 * sigmoid(α_parent)
-    # α_child = log(sigmoid(α_parent)/2 / (1 - sigmoid(α_parent)/2))
-    # Simpler: just shift in logit space
-    parent_prob = torch.sigmoid(gaussians.opacities)
-    child_prob = 0.5 * parent_prob
-    child_logit = torch.log(child_prob / (1.0 - child_prob + 1e-8) + 1e-8)
+    # Children keep parent's opacity — they cover less area but are
+    # just as opaque at their center. Optimizer adjusts during training.
+    child_logit = gaussians.opacities
 
     # Child covariance: compress along cut axis, preserve perpendicular
     # In local frame: Σ_child = I - c * e_axis @ e_axis^T

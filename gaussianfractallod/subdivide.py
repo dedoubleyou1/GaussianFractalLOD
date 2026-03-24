@@ -88,9 +88,9 @@ def _binary_cut_along_axis(gaussians: Gaussian, axis: int) -> Gaussian:
     L_right_flat = _L_to_flat(L_right)
     L_left_flat = _L_to_flat(L_left)
 
-    # Color: children start with parent's color (split evenly)
-    sh_right = gaussians.sh_coeffs.clone()
-    sh_left = gaussians.sh_coeffs.clone()
+    # Color: parent's color + small random perturbation to break symmetry
+    sh_right = gaussians.sh_coeffs + torch.randn_like(gaussians.sh_coeffs) * 0.01
+    sh_left = gaussians.sh_coeffs + torch.randn_like(gaussians.sh_coeffs) * 0.01
 
     # Interleave: [right_0, left_0, right_1, left_1, ...]
     means = torch.stack([mu_right, mu_left], dim=1).reshape(2 * N, 3)

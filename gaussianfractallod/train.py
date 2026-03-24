@@ -122,8 +122,11 @@ def _get_level_scale(level: int, max_levels: int) -> float:
     Resolution steps: 800, 600, 400, 300, 200, 150, 100, 75, 50, 35, ...
     Roughly halving total pixels each step.
     """
-    # Resolution steps from finest to coarsest
+    # Resolution steps from finest to coarsest (roughly halving pixels)
     _RES_STEPS = [800, 600, 400, 300, 200, 150, 100, 75, 50, 35, 25, 20, 15, 12]
+
+    # Iteration steps (matching resolution schedule)
+    _ITER_STEPS = [32000, 24000, 16000, 12000, 8000, 6000, 4000, 3000, 2000, 1500, 1000, 800, 600, 500]
 
     steps_from_top = max_levels - level
     if steps_from_top < len(_RES_STEPS):
@@ -132,6 +135,16 @@ def _get_level_scale(level: int, max_levels: int) -> float:
         res = _RES_STEPS[-1]
 
     return res / 800.0
+
+
+def _get_level_iterations(level: int, max_levels: int) -> int:
+    """Training iterations for a given level. More for finer levels."""
+    _ITER_STEPS = [32000, 24000, 16000, 12000, 8000, 6000, 4000, 3000, 2000, 1500, 1000, 800, 600, 500]
+
+    steps_from_top = max_levels - level
+    if steps_from_top < len(_ITER_STEPS):
+        return _ITER_STEPS[steps_from_top]
+    return _ITER_STEPS[-1]
 
 
 def _load_dataset_for_level(cfg: Config, level: int) -> NerfSyntheticDataset:
@@ -260,7 +273,7 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, Gaussi
         dataset = _load_dataset_for_level(cfg, current_level)
 
         # Exponential iterations: base * 2^(level-1)
-        level_iters = cfg.level_base_iterations * (2 ** (current_level - 1))
+        level_iters = _get_level_iterations(current_level, cfg.max_levels)
         logger.info(
             f"Level {current_level}: {num_gaussians} Gaussians, "
             f"{level_iters} iterations, scale={level_scale:.3f}"

@@ -1,15 +1,15 @@
-"""Checkpoint save/load for root Gaussians and split tree."""
+"""Checkpoint save/load for root Gaussians and Gaussian tree."""
 
 import torch
 from pathlib import Path
 from gaussianfractallod.gaussian import Gaussian
-from gaussianfractallod.split_tree import SplitTree
+from gaussianfractallod.split_tree import GaussianTree
 
 
 def save_checkpoint(
     path: str | Path,
     roots: Gaussian,
-    tree: SplitTree,
+    tree: GaussianTree,
     phase: int,
     level: int,
     **extra_meta,
@@ -23,11 +23,7 @@ def save_checkpoint(
             "sh_coeffs": roots.sh_coeffs.detach().cpu(),
         },
         "tree": tree.state_dict(),
-        "tree_meta": {
-            "num_roots": tree.num_roots,
-            "sh_dim": tree.sh_dim,
-            "depth": tree.depth,
-        },
+        "tree_depth": tree.depth,
         "meta": {"phase": phase, "level": level, **extra_meta},
     }
     Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -36,7 +32,7 @@ def save_checkpoint(
 
 def load_checkpoint(
     path: str | Path, device: torch.device | None = None
-) -> tuple[Gaussian, SplitTree, dict]:
+) -> tuple[Gaussian, GaussianTree, dict]:
     """Load training state from disk."""
     state = torch.load(path, map_location="cpu", weights_only=False)
 
@@ -47,9 +43,10 @@ def load_checkpoint(
         sh_coeffs=state["roots"]["sh_coeffs"],
     )
 
-    tm = state["tree_meta"]
-    tree = SplitTree(num_roots=tm["num_roots"], sh_dim=tm["sh_dim"])
-    for _ in range(tm["depth"]):
+    tree = GaussianTree()
+    # Reconstruct tree structure: set root, then add levels
+    tree.set_root_level(roots)
+    for _ in range(state["tree_depth"] - 1):
         tree.add_level()
     tree.load_state_dict(state["tree"])
 

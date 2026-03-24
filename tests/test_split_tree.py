@@ -1,55 +1,67 @@
 import torch
-from gaussianfractallod.split_tree import SplitTree
+from gaussianfractallod.gaussian import Gaussian
+from gaussianfractallod.split_tree import GaussianTree
 
 
-def test_create_empty_tree():
-    tree = SplitTree(num_roots=4, sh_dim=3)
-    assert tree.num_roots == 4
+def _make_roots(n=1):
+    return Gaussian(
+        means=torch.randn(n, 3),
+        L_flat=torch.zeros(n, 6),
+        opacities=torch.ones(n, 1) * 2.0,
+        sh_coeffs=torch.randn(n, 3),
+    )
+
+
+def test_create_tree():
+    tree = GaussianTree()
     assert tree.depth == 0
-    assert tree.num_splits == 0
+
+
+def test_set_root_level():
+    tree = GaussianTree()
+    roots = _make_roots(1)
+    tree.set_root_level(roots)
+    assert tree.depth == 1
+    assert tree.levels[0].num_gaussians == 1
 
 
 def test_add_level():
-    tree = SplitTree(num_roots=2, sh_dim=3)
+    tree = GaussianTree()
+    tree.set_root_level(_make_roots(1))
     tree.add_level()
-    assert tree.depth == 1
-    assert tree.num_splits == 2
+    assert tree.depth == 2
+    assert tree.levels[1].num_gaussians == 8  # 1 × 8
 
 
 def test_add_two_levels():
-    tree = SplitTree(num_roots=1, sh_dim=3)
+    tree = GaussianTree()
+    tree.set_root_level(_make_roots(1))
     tree.add_level()
     tree.add_level()
-    assert tree.depth == 2
-    assert tree.num_splits == 3
+    assert tree.depth == 3
+    assert tree.levels[2].num_gaussians == 64  # 8 × 8
 
 
-def test_split_vars_are_parameters():
-    tree = SplitTree(num_roots=1, sh_dim=3)
+def test_root_level_frozen():
+    tree = GaussianTree()
+    tree.set_root_level(_make_roots(1))
+    for p in tree.levels[0].parameters():
+        assert not p.requires_grad
+
+
+def test_child_level_trainable():
+    tree = GaussianTree()
+    tree.set_root_level(_make_roots(1))
     tree.add_level()
-    params = list(tree.level_parameters(0))
-    assert len(params) == 3  # cut_direction, cut_offset, color_split
-    for p in params:
+    for p in tree.levels[1].parameters():
         assert p.requires_grad
 
 
-def test_split_vars_initialized_correctly():
-    tree = SplitTree(num_roots=2, sh_dim=3)
+def test_get_gaussians_at_depth():
+    tree = GaussianTree()
+    tree.set_root_level(_make_roots(2))
     tree.add_level()
-    sv = tree.get_level_split_vars(0)
-    # Cut offset should be 0 (symmetric split)
-    torch.testing.assert_close(sv.cut_offset, torch.zeros(2))
-    # Color split should be 0
-    torch.testing.assert_close(sv.color_split, torch.zeros(2, 3))
-
-
-def test_occupancy_mask():
-    tree = SplitTree(num_roots=2, sh_dim=3)
-    tree.add_level()
-    assert tree.get_occupancy(0).all()
-    tree.set_occupancy(level=0, node_idx=0, child_b=False)
-    occ = tree.get_occupancy(0)
-    assert occ[0, 0] == True
-    assert occ[0, 1] == False
-    assert occ[1, 0] == True
-    assert occ[1, 1] == True
+    g0 = tree.get_gaussians_at_depth(0)
+    g1 = tree.get_gaussians_at_depth(1)
+    assert g0.num_gaussians == 2
+    assert g1.num_gaussians == 16  # 2 × 8

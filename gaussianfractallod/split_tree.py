@@ -1,97 +1,111 @@
-"""Binary split tree: stores split variables for each level of the hierarchy.
+"""Hierarchical Gaussian tree: each level stores independently trainable Gaussians.
 
-The tree is organized by levels. Level 0 splits the root Gaussians.
-Level 1 splits the children from level 0. Each level stores split
-variables for all nodes at that depth.
+Level 0: root Gaussians (trained in Phase 1)
+Level L: 8× more Gaussians than level L-1 (initialized via subdivision)
 
-Node count at level L: num_roots * 2^L (before pruning).
+Each level is independently renderable for LoD.
+Children are initialized from parent subdivision but train freely.
 """
 
 import torch
 import torch.nn as nn
-from dataclasses import dataclass
-from gaussianfractallod.derive import SplitVariables
+from gaussianfractallod.gaussian import Gaussian
+from gaussianfractallod.subdivide import subdivide_to_8
 
 
-class SplitLevel(nn.Module):
-    """Split variables for all nodes at one level of the tree."""
+class GaussianLevel(nn.Module):
+    """Trainable Gaussians at one level of the hierarchy."""
 
-    def __init__(self, num_nodes: int, sh_dim: int):
+    def __init__(self, means: torch.Tensor, L_flat: torch.Tensor,
+                 opacities: torch.Tensor, sh_coeffs: torch.Tensor):
         super().__init__()
-        self.num_nodes = num_nodes
-        self.sh_dim = sh_dim
+        self.means = nn.Parameter(means)
+        self.L_flat = nn.Parameter(L_flat)
+        self.opacities = nn.Parameter(opacities)
+        self.sh_coeffs = nn.Parameter(sh_coeffs)
 
-        # Learnable split variables
-        # Cut plane normal in parent's local frame (random direction)
-        self.cut_direction = nn.Parameter(torch.randn(num_nodes, 3))
-        # Cut position along normal (0 = symmetric split)
-        self.cut_offset = nn.Parameter(torch.zeros(num_nodes))
-        # Color deviation
-        self.color_split = nn.Parameter(torch.zeros(num_nodes, sh_dim))
+    @property
+    def num_gaussians(self) -> int:
+        return self.means.shape[0]
 
-        # Occupancy: (num_nodes, 2) — [child_a_active, child_b_active]
-        self.register_buffer(
-            "occupancy", torch.ones(num_nodes, 2, dtype=torch.bool)
+    def get_gaussians(self) -> Gaussian:
+        return Gaussian(
+            means=self.means,
+            L_flat=self.L_flat,
+            opacities=self.opacities,
+            sh_coeffs=self.sh_coeffs,
         )
 
-    def get_split_vars(self) -> SplitVariables:
-        return SplitVariables(
-            cut_direction=self.cut_direction,
-            cut_offset=self.cut_offset,
-            color_split=self.color_split,
-        )
+    def parameters_list(self):
+        """Return list of parameters for optimizer."""
+        return [self.means, self.L_flat, self.opacities, self.sh_coeffs]
 
 
-class SplitTree(nn.Module):
-    """Binary split tree organized by levels."""
+class GaussianTree(nn.Module):
+    """Hierarchical tree of Gaussian levels.
 
-    def __init__(self, num_roots: int, sh_dim: int):
+    Each level is independently renderable. Children are initialized
+    from parent subdivision (8× per parent) but train freely.
+    """
+
+    def __init__(self):
         super().__init__()
-        self.num_roots = num_roots
-        self.sh_dim = sh_dim
         self.levels = nn.ModuleList()
 
     @property
     def depth(self) -> int:
         return len(self.levels)
 
-    @property
-    def num_splits(self) -> int:
-        return sum(level.num_nodes for level in self.levels)
-
-    def add_level(self) -> None:
-        """Add a new split level at the bottom of the tree.
-
-        Node count: each active child at the previous level becomes a
-        node to split at this level. occupancy is (num_nodes, 2) bools,
-        so sum() counts total active children across both slots.
-        """
-        if self.depth == 0:
-            num_nodes = self.num_roots
-        else:
-            prev_level = self.levels[-1]
-            # Count active children: each True in occupancy (num_nodes, 2)
-            # is one child that becomes a node at the next level
-            num_nodes = int(prev_level.occupancy.sum().item())
-
-        level = SplitLevel(num_nodes, self.sh_dim)
+    def set_root_level(self, roots: Gaussian) -> None:
+        """Set level 0 from trained root Gaussians (frozen)."""
+        level = GaussianLevel(
+            means=roots.means.detach().clone(),
+            L_flat=roots.L_flat.detach().clone(),
+            opacities=roots.opacities.detach().clone(),
+            sh_coeffs=roots.sh_coeffs.detach().clone(),
+        )
+        # Freeze root level
+        for p in level.parameters():
+            p.requires_grad_(False)
         self.levels.append(level)
 
-    def get_level_split_vars(self, level_idx: int) -> SplitVariables:
-        return self.levels[level_idx].get_split_vars()
+    def add_level(self) -> None:
+        """Add a new level by subdividing the current finest level.
 
-    def level_parameters(self, level_idx: int):
-        """Yield learnable parameters for a specific level."""
-        level = self.levels[level_idx]
-        yield level.cut_direction
-        yield level.cut_offset
-        yield level.color_split
+        Each parent Gaussian produces 8 children via 3 sequential
+        binary cuts. Children are detached and set as trainable parameters.
+        """
+        assert self.depth > 0, "Must set root level first"
 
-    def get_occupancy(self, level_idx: int) -> torch.Tensor:
-        return self.levels[level_idx].occupancy
+        parent_level = self.levels[-1]
+        parents = parent_level.get_gaussians()
 
-    def set_occupancy(
-        self, level: int, node_idx: int, child_a: bool = True, child_b: bool = True
-    ) -> None:
-        self.levels[level].occupancy[node_idx, 0] = child_a
-        self.levels[level].occupancy[node_idx, 1] = child_b
+        # Subdivide: N parents → 8N children
+        with torch.no_grad():
+            children = subdivide_to_8(parents)
+
+        # Create trainable level from subdivision
+        new_level = GaussianLevel(
+            means=children.means.detach().clone(),
+            L_flat=children.L_flat.detach().clone(),
+            opacities=children.opacities.detach().clone(),
+            sh_coeffs=children.sh_coeffs.detach().clone(),
+        )
+        self.levels.append(new_level)
+
+    def get_level_gaussians(self, level: int) -> Gaussian:
+        """Get Gaussians at a specific level."""
+        return self.levels[level].get_gaussians()
+
+    def level_parameters(self, level: int):
+        """Yield trainable parameters for a specific level."""
+        return self.levels[level].parameters_list()
+
+    def get_gaussians_at_depth(self, target_depth: int) -> Gaussian:
+        """Get Gaussians for rendering at a target depth.
+
+        Returns the Gaussians at the specified level (0-indexed).
+        Level 0 = roots, level 1 = first subdivision, etc.
+        """
+        actual_depth = min(target_depth, self.depth - 1)
+        return self.levels[actual_depth].get_gaussians()

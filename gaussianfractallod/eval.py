@@ -3,8 +3,7 @@
 import torch
 import logging
 from gaussianfractallod.gaussian import Gaussian
-from gaussianfractallod.split_tree import SplitTree
-from gaussianfractallod.reconstruct import reconstruct
+from gaussianfractallod.split_tree import GaussianTree
 from gaussianfractallod.render import render_gaussians
 from gaussianfractallod.data import NerfSyntheticDataset
 
@@ -12,8 +11,7 @@ logger = logging.getLogger(__name__)
 
 
 def evaluate(
-    roots: Gaussian,
-    tree: SplitTree,
+    tree: GaussianTree,
     dataset: NerfSyntheticDataset,
     target_depth: int,
     device: torch.device,
@@ -22,10 +20,9 @@ def evaluate(
     """Evaluate model on a dataset split.
 
     Args:
-        roots: Root Gaussians.
-        tree: Split tree.
+        tree: Gaussian tree with trained levels.
         dataset: Evaluation dataset.
-        target_depth: Binary depth to reconstruct.
+        target_depth: Which level to render (0 = roots).
         device: Torch device.
         background: Background color.
 
@@ -47,8 +44,9 @@ def evaluate(
     lpips_values = []
 
     with torch.no_grad():
-        gaussians = reconstruct(roots, tree, target_depth)
-        logger.info(f"Reconstructed {gaussians.num_gaussians} Gaussians at depth {target_depth}")
+        gaussians = tree.get_gaussians_at_depth(target_depth)
+        logger.info(f"Rendering {gaussians.num_gaussians} Gaussians at depth {target_depth}")
+
         for i in range(len(dataset)):
             gt_image, camera = dataset[i]
             gt_image = gt_image.to(device)
@@ -64,7 +62,6 @@ def evaluate(
                 background=background,
             )
 
-            # torchmetrics expects (B, C, H, W)
             pred_4d = rendered.permute(2, 0, 1).unsqueeze(0).clamp(0, 1)
             gt_4d = gt_image.permute(2, 0, 1).unsqueeze(0).clamp(0, 1)
 

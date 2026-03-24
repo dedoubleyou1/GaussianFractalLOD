@@ -13,11 +13,11 @@ class Config:
     root_iterations: int = 10000
     root_convergence_window: int = 1000
 
-    # Split fitting (Phase 2)
-    max_binary_depth: int = 18
-    split_lr: float = 5e-3
-    split_iterations_per_level: int = 5000
-    split_convergence_window: int = 500
+    # Level fitting (Phase 2) — each level has 8× more Gaussians
+    max_levels: int = 6  # 8^6 = 262K max Gaussians from 1 root
+    level_lr: float = 5e-3
+    level_iterations: int = 5000
+    level_convergence_window: int = 500
 
     # SH degree
     sh_degree: int = 3

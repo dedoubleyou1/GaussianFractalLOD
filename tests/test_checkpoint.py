@@ -1,50 +1,27 @@
 import torch
 from pathlib import Path
 from gaussianfractallod.gaussian import Gaussian
-from gaussianfractallod.split_tree import SplitTree
+from gaussianfractallod.split_tree import GaussianTree
 from gaussianfractallod.checkpoint import save_checkpoint, load_checkpoint
 
 
 def test_checkpoint_round_trip(tmp_path):
-    roots = Gaussian(
-        means=torch.randn(4, 3),
-        L_flat=torch.randn(4, 6),
-        opacities=torch.randn(4, 1),
-        sh_coeffs=torch.randn(4, 3),
-    )
-    tree = SplitTree(num_roots=4, sh_dim=3)
-    tree.add_level()
-
-    path = tmp_path / "ckpt.pt"
-    save_checkpoint(path, roots, tree, phase=1, level=0)
-
-    loaded_roots, loaded_tree, meta = load_checkpoint(path)
-    torch.testing.assert_close(loaded_roots.means, roots.means)
-    torch.testing.assert_close(loaded_roots.L_flat, roots.L_flat)
-    assert loaded_tree.depth == tree.depth
-    assert loaded_tree.num_roots == tree.num_roots
-    assert meta["phase"] == 1
-    assert meta["level"] == 0
-
-
-def test_checkpoint_preserves_split_vars(tmp_path):
     roots = Gaussian(
         means=torch.randn(2, 3),
         L_flat=torch.randn(2, 6),
         opacities=torch.randn(2, 1),
         sh_coeffs=torch.randn(2, 3),
     )
-    tree = SplitTree(num_roots=2, sh_dim=3)
+    tree = GaussianTree()
+    tree.set_root_level(roots)
     tree.add_level()
-    with torch.no_grad():
-        tree.levels[0].cut_offset.fill_(0.7)
-        tree.levels[0].color_split.fill_(0.1)
 
     path = tmp_path / "ckpt.pt"
-    save_checkpoint(path, roots, tree, phase=2, level=0)
+    save_checkpoint(path, roots, tree, phase=2, level=1)
 
-    _, loaded_tree, _ = load_checkpoint(path)
-    torch.testing.assert_close(
-        loaded_tree.levels[0].cut_offset,
-        torch.tensor([0.7, 0.7]),
-    )
+    loaded_roots, loaded_tree, meta = load_checkpoint(path)
+    torch.testing.assert_close(loaded_roots.means, roots.means)
+    torch.testing.assert_close(loaded_roots.L_flat, roots.L_flat)
+    assert loaded_tree.depth == tree.depth
+    assert meta["phase"] == 2
+    assert meta["level"] == 1

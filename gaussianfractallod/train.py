@@ -156,7 +156,12 @@ def _load_dataset_for_level(cfg: Config, level: int) -> NerfSyntheticDataset:
 
 def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, GaussianTree]:
     """Run full training pipeline."""
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
     logger.info(f"Using device: {device}")
 
     sh_degree = cfg.sh_degree

@@ -66,12 +66,19 @@ def _train_level_step(
     tree: GaussianTree,
     level: int,
     gt_image: torch.Tensor,
+    gt_image_hires: torch.Tensor | None,
     camera: dict,
+    camera_hires: dict | None,
     optimizer: torch.optim.Optimizer,
     cfg: Config,
     background: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Single training step for a level's Gaussians."""
+    """Single training step for a level's Gaussians.
+
+    If gt_image_hires and camera_hires are provided, also renders
+    hypothetical children (on-the-fly subdivision, no extra params)
+    at higher resolution for additional gradient signal.
+    """
     optimizer.zero_grad()
 
     gaussians = tree.get_level_gaussians(level)
@@ -86,6 +93,22 @@ def _train_level_step(
     )
 
     loss = rendering_loss(rendered, gt_image, ssim_weight=cfg.ssim_weight)
+
+    # Hypothetical children: subdivide on-the-fly and render at higher res
+    # Gradients flow through subdivision back to parent parameters
+    if gt_image_hires is not None and camera_hires is not None:
+        from gaussianfractallod.subdivide import subdivide_to_8
+        hypothetical = subdivide_to_8(gaussians)
+        rendered_hires = render_gaussians(
+            hypothetical,
+            viewmat=camera_hires["viewmat"],
+            K=camera_hires["K"],
+            width=camera_hires["width"],
+            height=camera_hires["height"],
+            background=background,
+        )
+        loss_children = rendering_loss(rendered_hires, gt_image_hires, ssim_weight=cfg.ssim_weight)
+        loss = loss + loss_children
 
     # Regularization
     level_module = tree.levels[level]
@@ -302,6 +325,11 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, Gaussi
         level_scale = _get_level_scale(current_level, cfg.max_levels)
         dataset = _load_dataset_for_level(cfg, current_level)
 
+        # Load higher-res dataset for hypothetical children rendering
+        # (one step above current level's resolution)
+        hires_level = min(current_level + 1, cfg.max_levels)
+        dataset_hires = _load_dataset_for_level(cfg, hires_level) if current_level < cfg.max_levels else None
+
         # Exponential iterations: base * 2^(level-1)
         level_iters = _get_level_iterations(current_level, cfg.max_levels)
         logger.info(
@@ -326,9 +354,19 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, Gaussi
             camera = {k: v.to(device) if isinstance(v, torch.Tensor) else v
                       for k, v in camera.items()}
 
+            # Higher-res image for hypothetical children (same view index)
+            gt_hires, cam_hires = None, None
+            if dataset_hires is not None:
+                gt_hires, cam_hires = dataset_hires[idx]
+                gt_hires = gt_hires.to(device)
+                cam_hires = {k: v.to(device) if isinstance(v, torch.Tensor) else v
+                             for k, v in cam_hires.items()}
+
             loss = _train_level_step(
                 tree, current_level,
-                gt_image, camera, optimizer,
+                gt_image, gt_hires,
+                camera, cam_hires,
+                optimizer,
                 cfg=cfg, background=background,
             )
 

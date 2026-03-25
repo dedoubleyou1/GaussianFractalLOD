@@ -52,17 +52,17 @@ def train(
 
     # Download dataset to volume if not present
     data_dir = f"/data/nerf_synthetic/{scene}"
-    if not os.path.exists(f"{data_dir}/transforms_train.json"):
-        print(f"Downloading {scene} dataset...")
+    if not os.path.exists(f"{data_dir}/transforms_test.json"):
+        print(f"Downloading {scene} dataset (all splits)...")
         os.makedirs("/data/nerf_synthetic", exist_ok=True)
-        os.system("pip install -q huggingface_hub")
         from huggingface_hub import snapshot_download
         snapshot_download(
             repo_id="phuckstnk63/nerf-synthetic",
             repo_type="dataset",
             local_dir="/data/nerf_synthetic_repo",
-            allow_patterns=f"nerf_synthetic/{scene}/*",
+            allow_patterns=f"nerf_synthetic/{scene}/**",
         )
+        os.system(f"rm -rf /data/nerf_synthetic/{scene}")
         os.system(f"mv /data/nerf_synthetic_repo/nerf_synthetic/{scene} /data/nerf_synthetic/{scene}")
         os.system("rm -rf /data/nerf_synthetic_repo")
         data_vol.commit()

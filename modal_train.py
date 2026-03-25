@@ -133,6 +133,82 @@ def evaluate(
 
 @app.function(
     gpu="L4",
+    timeout=300,
+    volumes={"/checkpoints": vol},
+)
+def analyze_residuals(
+    scene: str = "lego",
+    sh_degree: int = 0,
+    max_levels: int = 9,
+):
+    """Analyze how far trained Gaussians drift from their initialization."""
+    vol.reload()
+    import torch
+    import glob
+
+    from gaussianfractallod.checkpoint import load_checkpoint
+
+    checkpoint_dir = f"/checkpoints/{scene}_sh{sh_degree}_l{max_levels}"
+    ckpts = sorted(glob.glob(f"{checkpoint_dir}/phase2_level_*.pt"))
+    if not ckpts:
+        print(f"No checkpoints in {checkpoint_dir}")
+        return
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    roots, tree, meta = load_checkpoint(ckpts[-1], device=device)
+
+    print(f"{'Level':>6} {'N':>8} {'pos_drift':>10} {'pos/scale':>10} {'scale_drift':>12} {'quat_drift':>11} {'color_drift':>12} {'opacity_drift':>14}")
+    print("-" * 95)
+
+    for level_idx in range(1, tree.depth):
+        lm = tree.levels[level_idx]
+        with torch.no_grad():
+            # Position drift (absolute and relative to Gaussian scale)
+            pos_drift = (lm.means - lm.init_means).norm(dim=-1)  # (N,)
+            avg_scale = torch.exp(lm.log_scales).mean(dim=-1)  # (N,)
+            pos_relative = pos_drift / (avg_scale + 1e-8)
+
+            # Scale drift (in log-space)
+            scale_drift = (lm.log_scales - lm.init_log_scales).abs().mean(dim=-1)  # (N,)
+
+            # Quaternion drift (angle between init and trained)
+            # For now approximate: init quats aren't stored, but we know
+            # children inherit parent quats. Use dot product as similarity.
+            # quat drift = arccos(|dot(q_trained, q_init)|)
+            # Since we don't store init_quats, measure deviation from identity-like behavior
+            # by checking how far from the parent direction
+
+            # Color drift
+            color_drift = (lm.sh_coeffs - lm.sh_coeffs.mean()).abs().mean(dim=-1) if hasattr(lm, 'sh_coeffs') else torch.zeros(1)
+
+            # Opacity drift
+            init_opacity_est = 0.1  # rough estimate — children start near this after reset
+            opacity_drift = lm.opacities.squeeze(-1).abs().mean()
+
+            N = lm.num_gaussians
+            print(f"{level_idx:>6} {N:>8} {pos_drift.mean():.4f} {pos_relative.mean():>10.2f}σ {scale_drift.mean():>12.4f} {'N/A':>11} {color_drift.mean():>12.4f} {opacity_drift:>14.4f}")
+
+    # Summary: what fraction of parameters are "small residuals"?
+    print("\n--- Compressibility Analysis ---")
+    for level_idx in range(1, tree.depth):
+        lm = tree.levels[level_idx]
+        with torch.no_grad():
+            pos_drift = (lm.means - lm.init_means).norm(dim=-1)
+            avg_scale = torch.exp(lm.log_scales).mean(dim=-1)
+            relative = pos_drift / (avg_scale + 1e-8)
+
+            # Fraction of Gaussians that stayed within 1σ of init
+            within_1sigma = (relative < 1.0).float().mean().item()
+            within_2sigma = (relative < 2.0).float().mean().item()
+
+            scale_change = (lm.log_scales - lm.init_log_scales).abs()
+            small_scale = (scale_change < 0.5).float().mean().item()  # <50% scale change
+
+            print(f"Level {level_idx}: {within_1sigma:.0%} within 1σ, {within_2sigma:.0%} within 2σ, {small_scale:.0%} small scale change")
+
+
+@app.function(
+    gpu="L4",
     timeout=600,
     volumes={"/checkpoints": vol},
 )
@@ -184,8 +260,14 @@ def main(
     max_levels: int = 9,
     eval_only: bool = False,
     export: bool = False,
+    analyze: bool = False,
     resume: str | None = None,
 ):
+    if analyze:
+        print("Analyzing residuals...")
+        analyze_residuals.remote(scene=scene, sh_degree=sh_degree, max_levels=max_levels)
+        return
+
     if export:
         print("Exporting PLY files...")
         plys = export_plys.remote(scene=scene, sh_degree=sh_degree, max_levels=max_levels)

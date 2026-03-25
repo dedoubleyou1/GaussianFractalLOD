@@ -212,36 +212,29 @@ def _render_pytorch(
 
         contributions.append((y_min, y_max, x_min, x_max, local_alpha, idx))
 
-    # Pass 2: composite using full-image sparse contributions
-    # Each Gaussian produces a full-image contribution (zero outside bbox)
-    # Transmittance tracked separately (detached) for weighting
+    # Pass 2: composite front-to-back
+    # Accumulate incrementally (no list, no stack — constant memory)
+    # Transmittance detached for in-place updates; gradients flow through alpha*color
     transmittance = torch.ones(height, width, device=device)
-
-    # Accumulate weighted contributions into a list, then sum
-    all_contributions = []
+    rendered = torch.zeros(height, width, 3, device=device)
 
     for y_min, y_max, x_min, x_max, local_alpha, idx in contributions:
         local_t = transmittance[y_min:y_max, x_min:x_max].clone()
 
-        # Create full-image contribution (sparse — only bbox is nonzero)
-        weight = local_t * local_alpha  # (h, w) — has gradient through local_alpha
-        full_contrib = torch.zeros(height, width, 3, device=device)
-        full_contrib[y_min:y_max, x_min:x_max] = (
-            weight.unsqueeze(-1) * colors[idx].view(1, 1, 3)
-        )
-        all_contributions.append(full_contrib)
+        # Weighted contribution (gradient flows through local_alpha and colors)
+        weight = local_t * local_alpha  # (h, w)
+        local_color = weight.unsqueeze(-1) * colors[idx].view(1, 1, 3)  # (h, w, 3)
+
+        # Accumulate into rendered — use out-of-place add on a full-size zero tensor
+        contrib = torch.zeros(height, width, 3, device=device)
+        contrib[y_min:y_max, x_min:x_max] = local_color
+        rendered = rendered + contrib
 
         # Update transmittance (detached, in-place ok)
         with torch.no_grad():
             transmittance[y_min:y_max, x_min:x_max] = (
                 local_t * (1.0 - local_alpha.detach())
             )
-
-    # Sum all contributions + background
-    if all_contributions:
-        rendered = torch.stack(all_contributions).sum(dim=0)
-    else:
-        rendered = torch.zeros(height, width, 3, device=device)
 
     rendered = rendered + transmittance.unsqueeze(-1) * background.view(1, 1, 3)
 

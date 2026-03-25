@@ -31,7 +31,7 @@ class Config:
     opacity_reset_value: float = -2.2   # inverse_sigmoid(0.1)
 
     # Adaptive splitting
-    split_grad_threshold: float = 0.0002  # only split Gaussians with grad above this
+    split_grad_threshold: float = 0.005  # adjusted for max-gradient scoring
 
     # Regularization
     reg_scale_weight: float = 0.01

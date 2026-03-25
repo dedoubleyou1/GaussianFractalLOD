@@ -188,6 +188,47 @@ def analyze_residuals(
             N = lm.num_gaussians
             print(f"{level_idx:>6} {N:>8} {pos_drift.mean():.4f} {pos_relative.mean():>10.2f}σ {scale_drift.mean():>12.4f} {'N/A':>11} {color_drift.mean():>12.4f} {opacity_drift:>14.4f}")
 
+    # Drift direction analysis: is there a systematic bias?
+    print("\n--- Drift Direction Analysis ---")
+    for level_idx in range(1, min(tree.depth, 8)):
+        lm = tree.levels[level_idx]
+        with torch.no_grad():
+            drift_vec = lm.means - lm.init_means  # (N, 3)
+            avg_scale = torch.exp(lm.log_scales).mean(dim=-1, keepdim=True)  # (N, 1)
+
+            # Normalize drift by scale to get direction in Gaussian-relative units
+            drift_norm = drift_vec / (avg_scale + 1e-8)  # (N, 3)
+
+            # Is drift radial (away from parent center)?
+            # Compare drift direction to init_position direction (from origin)
+            init_dir = lm.init_means / (lm.init_means.norm(dim=-1, keepdim=True) + 1e-8)
+            drift_dir = drift_vec / (drift_vec.norm(dim=-1, keepdim=True) + 1e-8)
+            radial_component = (drift_dir * init_dir).sum(dim=-1)  # dot product
+
+            # If children from same parent drift together, measure sibling coherence
+            if hasattr(lm, 'parent_indices'):
+                parent_idx = lm.parent_indices
+                unique_parents = parent_idx.unique()
+                sibling_coherences = []
+                for pid in unique_parents[:100]:  # sample 100 parents
+                    mask = parent_idx == pid
+                    if mask.sum() < 2:
+                        continue
+                    sibling_drifts = drift_norm[mask]  # (K, 3)
+                    mean_drift = sibling_drifts.mean(dim=0)
+                    coherence = mean_drift.norm() / (sibling_drifts.norm(dim=-1).mean() + 1e-8)
+                    sibling_coherences.append(coherence.item())
+
+                avg_coherence = sum(sibling_coherences) / max(len(sibling_coherences), 1)
+            else:
+                avg_coherence = 0.0
+
+            # Mean drift direction (global bias)
+            mean_drift = drift_norm.mean(dim=0)
+
+            print(f"Level {level_idx}: mean_drift=({mean_drift[0]:.3f}, {mean_drift[1]:.3f}, {mean_drift[2]:.3f}), "
+                  f"radial_bias={radial_component.mean():.3f}, sibling_coherence={avg_coherence:.3f}")
+
     # Summary: what fraction of parameters are "small residuals"?
     print("\n--- Compressibility Analysis ---")
     for level_idx in range(1, tree.depth):

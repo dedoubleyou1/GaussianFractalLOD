@@ -93,7 +93,7 @@ def _train_level_step(
     # Scale: exponential cost for deviating from initial (log-ratio)
     diag_idx = [0, 2, 5]
     log_ratio = gaussians.L_flat[:, diag_idx] - level_module.init_L_flat[:, diag_idx]
-    scale_reg = torch.exp(log_ratio.abs()).mean()
+    scale_reg = torch.exp(log_ratio * log_ratio).mean()  # squared instead of abs (MPS-friendly)
 
     # Aspect ratio: penalize difference between largest and smallest axes
     # Pushes toward isotropic regardless of initialization

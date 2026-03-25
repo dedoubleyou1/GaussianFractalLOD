@@ -98,10 +98,10 @@ def _binary_cut_along_axis(gaussians: Gaussian, axis: int) -> Gaussian:
 def _L_to_flat(L: torch.Tensor) -> torch.Tensor:
     """Convert (N, 3, 3) lower-triangular to (N, 6) flat with log diagonal."""
     return torch.stack([
-        torch.log(L[:, 0, 0].abs().clamp(min=1e-8)),
+        torch.log(L[:, 0, 0].clamp(min=1e-8)),
         L[:, 1, 0],
-        torch.log(L[:, 1, 1].abs().clamp(min=1e-8)),
+        torch.log(L[:, 1, 1].clamp(min=1e-8)),
         L[:, 2, 0],
         L[:, 2, 1],
-        torch.log(L[:, 2, 2].abs().clamp(min=1e-8)),
+        torch.log(L[:, 2, 2].clamp(min=1e-8)),
     ], dim=-1)

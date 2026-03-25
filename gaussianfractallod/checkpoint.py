@@ -18,7 +18,8 @@ def save_checkpoint(
     state = {
         "roots": {
             "means": roots.means.detach().cpu(),
-            "L_flat": roots.L_flat.detach().cpu(),
+            "quats": roots.quats.detach().cpu(),
+            "log_scales": roots.log_scales.detach().cpu(),
             "opacities": roots.opacities.detach().cpu(),
             "sh_coeffs": roots.sh_coeffs.detach().cpu(),
         },
@@ -38,7 +39,8 @@ def load_checkpoint(
 
     roots = Gaussian(
         means=state["roots"]["means"],
-        L_flat=state["roots"]["L_flat"],
+        quats=state["roots"]["quats"],
+        log_scales=state["roots"]["log_scales"],
         opacities=state["roots"]["opacities"],
         sh_coeffs=state["roots"]["sh_coeffs"],
     )

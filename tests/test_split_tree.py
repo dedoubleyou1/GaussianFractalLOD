@@ -6,7 +6,8 @@ from gaussianfractallod.split_tree import GaussianTree
 def _make_roots(n=1):
     return Gaussian(
         means=torch.randn(n, 3),
-        L_flat=torch.zeros(n, 6),
+        quats=torch.tensor([[1.0, 0.0, 0.0, 0.0]]).expand(n, 4).contiguous(),
+        log_scales=torch.zeros(n, 3),
         opacities=torch.ones(n, 1) * 2.0,
         sh_coeffs=torch.randn(n, 3),
     )
@@ -30,7 +31,7 @@ def test_add_level():
     tree.set_root_level(_make_roots(1))
     tree.add_level()
     assert tree.depth == 2
-    assert tree.levels[1].num_gaussians == 8  # 1 × 8
+    assert tree.levels[1].num_gaussians == 8  # 1 x 8
 
 
 def test_add_two_levels():
@@ -39,7 +40,7 @@ def test_add_two_levels():
     tree.add_level()
     tree.add_level()
     assert tree.depth == 3
-    assert tree.levels[2].num_gaussians == 64  # 8 × 8
+    assert tree.levels[2].num_gaussians == 64  # 8 x 8
 
 
 def test_root_level_frozen():
@@ -64,4 +65,4 @@ def test_get_gaussians_at_depth():
     g0 = tree.get_gaussians_at_depth(0)
     g1 = tree.get_gaussians_at_depth(1)
     assert g0.num_gaussians == 2
-    assert g1.num_gaussians == 16  # 2 × 8
+    assert g1.num_gaussians == 16  # 2 x 8

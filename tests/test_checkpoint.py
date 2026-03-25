@@ -8,7 +8,8 @@ from gaussianfractallod.checkpoint import save_checkpoint, load_checkpoint
 def test_checkpoint_round_trip(tmp_path):
     roots = Gaussian(
         means=torch.randn(2, 3),
-        L_flat=torch.randn(2, 6),
+        quats=torch.randn(2, 4),
+        log_scales=torch.randn(2, 3),
         opacities=torch.randn(2, 1),
         sh_coeffs=torch.randn(2, 3),
     )
@@ -21,7 +22,8 @@ def test_checkpoint_round_trip(tmp_path):
 
     loaded_roots, loaded_tree, meta = load_checkpoint(path)
     torch.testing.assert_close(loaded_roots.means, roots.means)
-    torch.testing.assert_close(loaded_roots.L_flat, roots.L_flat)
+    torch.testing.assert_close(loaded_roots.quats, roots.quats)
+    torch.testing.assert_close(loaded_roots.log_scales, roots.log_scales)
     assert loaded_tree.depth == tree.depth
     assert meta["phase"] == 2
     assert meta["level"] == 1

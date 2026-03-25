@@ -1,6 +1,7 @@
-"""gsplat rendering wrapper: Gaussian batch → rendered image."""
+"""gsplat rendering wrapper: Gaussian batch -> rendered image."""
 
 import torch
+import torch.nn.functional as F
 from gsplat import rasterization
 from gaussianfractallod.gaussian import Gaussian
 
@@ -16,9 +17,8 @@ def render_gaussians(
 ) -> torch.Tensor:
     """Render Gaussians to an image using gsplat.
 
-    Passes covariance matrices (Σ = L @ L.T) directly to gsplat,
-    which is fully differentiable — gradients flow cleanly back
-    to the Cholesky factor L_flat without eigendecomposition.
+    Passes quaternions and scales directly to gsplat, which is
+    faster than passing covariance matrices.
     """
     device = gaussians.means.device
 
@@ -27,8 +27,9 @@ def render_gaussians(
 
     N = gaussians.num_gaussians
 
-    # Compute covariance directly from Cholesky: Σ = L @ L.T
-    covars = gaussians.covariance()  # (N, 3, 3)
+    # Normalized quaternions and scales for gsplat
+    quats = F.normalize(gaussians.quats, dim=-1)  # (N, 4) wxyz
+    scales = gaussians.scales()  # (N, 3)
 
     # Infer SH degree from coefficient count
     D = gaussians.sh_coeffs.shape[-1]
@@ -53,8 +54,8 @@ def render_gaussians(
 
     renders, alphas, meta = rasterization(
         means=gaussians.means,
-        quats=None,
-        scales=None,
+        quats=quats,
+        scales=scales,
         opacities=torch.sigmoid(gaussians.opacities.squeeze(-1)),
         colors=sh_coeffs_3,
         viewmats=viewmat.unsqueeze(0),
@@ -62,7 +63,6 @@ def render_gaussians(
         width=width,
         height=height,
         sh_degree=sh_degree,
-        covars=covars,
     )
 
     # Apply background manually

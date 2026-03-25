@@ -11,6 +11,7 @@ Implements 3DGS-style training techniques:
 
 import math
 import torch
+import torch.nn.functional as F
 import random
 import logging
 from pathlib import Path
@@ -41,7 +42,8 @@ def _make_optimizer(cfg: Config, level_module) -> torch.optim.Adam:
     """Create per-parameter-group optimizer (3DGS style)."""
     return torch.optim.Adam([
         {"params": [level_module.means], "lr": cfg.lr_means, "name": "means"},
-        {"params": [level_module.L_flat], "lr": cfg.lr_L_flat, "name": "L_flat"},
+        {"params": [level_module.quats], "lr": cfg.lr_quats, "name": "quats"},
+        {"params": [level_module.log_scales], "lr": cfg.lr_log_scales, "name": "log_scales"},
         {"params": [level_module.opacities], "lr": cfg.lr_opacities, "name": "opacities"},
         {"params": [level_module.sh_coeffs], "lr": cfg.lr_sh_coeffs, "name": "sh_coeffs"},
     ], eps=1e-15)
@@ -52,6 +54,12 @@ def _update_position_lr(optimizer: torch.optim.Adam, new_lr: float) -> None:
     for param_group in optimizer.param_groups:
         if param_group.get("name") == "means":
             param_group["lr"] = new_lr
+
+
+def _normalize_quaternions(level_module) -> None:
+    """Normalize quaternions after optimizer step."""
+    with torch.no_grad():
+        level_module.quats.data = F.normalize(level_module.quats.data, dim=-1)
 
 
 def _train_level_step(
@@ -90,9 +98,8 @@ def _train_level_step(
     else:
         pos_reg = torch.tensor(0.0, device=loss.device)
 
-    # Scale: exponential cost for deviating from initial (log-ratio)
-    diag_idx = [0, 2, 5]
-    log_ratio = gaussians.L_flat[:, diag_idx] - level_module.init_L_flat[:, diag_idx]
+    # Scale: compare log_scales to init_log_scales (log-ratio)
+    log_ratio = gaussians.log_scales - level_module.init_log_scales
     scale_reg = torch.exp(log_ratio.abs()).mean()
 
     total_loss = (
@@ -106,6 +113,9 @@ def _train_level_step(
     level_module.accumulate_grad()
 
     optimizer.step()
+
+    # Normalize quaternions after optimizer step
+    _normalize_quaternions(level_module)
 
     return loss.detach()
 
@@ -164,7 +174,8 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, Gaussi
         roots = init_roots(cfg.num_roots, sh_degree=sh_degree, device=device)
 
         optimizer = torch.optim.Adam(
-            [roots.means, roots.L_flat, roots.opacities, roots.sh_coeffs],
+            [roots.means, roots.quats, roots.log_scales,
+             roots.opacities, roots.sh_coeffs],
             lr=cfg.root_lr, eps=1e-15,
         )
 
@@ -182,6 +193,10 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, Gaussi
                 roots, gt_image, camera, optimizer,
                 ssim_weight=cfg.ssim_weight, background=background,
             )
+
+            # Normalize quaternions after optimizer step
+            with torch.no_grad():
+                roots.quats.data = F.normalize(roots.quats.data, dim=-1)
 
             writer.add_scalar("phase1/loss", loss.item(), step)
 
@@ -201,7 +216,8 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, Gaussi
         # Freeze roots
         roots = Gaussian(
             means=roots.means.detach(),
-            L_flat=roots.L_flat.detach(),
+            quats=roots.quats.detach(),
+            log_scales=roots.log_scales.detach(),
             opacities=roots.opacities.detach(),
             sh_coeffs=roots.sh_coeffs.detach(),
         )

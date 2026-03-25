@@ -16,17 +16,19 @@ from gaussianfractallod.subdivide import subdivide_to_8
 class GaussianLevel(nn.Module):
     """Trainable Gaussians at one level of the hierarchy."""
 
-    def __init__(self, means: torch.Tensor, L_flat: torch.Tensor,
-                 opacities: torch.Tensor, sh_coeffs: torch.Tensor):
+    def __init__(self, means: torch.Tensor, quats: torch.Tensor,
+                 log_scales: torch.Tensor, opacities: torch.Tensor,
+                 sh_coeffs: torch.Tensor):
         super().__init__()
         self.means = nn.Parameter(means)
-        self.L_flat = nn.Parameter(L_flat)
+        self.quats = nn.Parameter(quats)
+        self.log_scales = nn.Parameter(log_scales)
         self.opacities = nn.Parameter(opacities)
         self.sh_coeffs = nn.Parameter(sh_coeffs)
 
         # Store initial values for regularization
         self.register_buffer("init_means", means.detach().clone())
-        self.register_buffer("init_L_flat", L_flat.detach().clone())
+        self.register_buffer("init_log_scales", log_scales.detach().clone())
 
         # Gradient accumulator for adaptive splitting (not a parameter)
         self.register_buffer("grad_accum", torch.zeros(means.shape[0]))
@@ -39,7 +41,8 @@ class GaussianLevel(nn.Module):
     def get_gaussians(self) -> Gaussian:
         return Gaussian(
             means=self.means,
-            L_flat=self.L_flat,
+            quats=self.quats,
+            log_scales=self.log_scales,
             opacities=self.opacities,
             sh_coeffs=self.sh_coeffs,
         )
@@ -55,7 +58,7 @@ class GaussianLevel(nn.Module):
         return self.grad_accum / (self.grad_count + 1e-8)
 
     def reset_opacity(self, value: float = -2.2) -> None:
-        """Reset all opacities to a low value (inverse_sigmoid(0.1) ≈ -2.2)."""
+        """Reset all opacities to a low value (inverse_sigmoid(0.1) ~ -2.2)."""
         with torch.no_grad():
             self.opacities.fill_(value)
 
@@ -75,7 +78,8 @@ class GaussianTree(nn.Module):
         """Set level 0 from trained root Gaussians (frozen)."""
         level = GaussianLevel(
             means=roots.means.detach().clone(),
-            L_flat=roots.L_flat.detach().clone(),
+            quats=roots.quats.detach().clone(),
+            log_scales=roots.log_scales.detach().clone(),
             opacities=roots.opacities.detach().clone(),
             sh_coeffs=roots.sh_coeffs.detach().clone(),
         )
@@ -108,18 +112,20 @@ class GaussianTree(nn.Module):
                 parent_indices = torch.arange(N_parents, device=parents.means.device).repeat_interleave(8)
             else:
                 # Split only selected parents, keep the rest as-is
-                split_indices = torch.where(split_mask)[0]  # original indices of split parents
+                split_indices = torch.where(split_mask)[0]
                 keep_indices = torch.where(~split_mask)[0]
 
                 split_parents = Gaussian(
                     means=parents.means[split_mask],
-                    L_flat=parents.L_flat[split_mask],
+                    quats=parents.quats[split_mask],
+                    log_scales=parents.log_scales[split_mask],
                     opacities=parents.opacities[split_mask],
                     sh_coeffs=parents.sh_coeffs[split_mask],
                 )
                 keep_parents = Gaussian(
                     means=parents.means[~split_mask],
-                    L_flat=parents.L_flat[~split_mask],
+                    quats=parents.quats[~split_mask],
+                    log_scales=parents.log_scales[~split_mask],
                     opacities=parents.opacities[~split_mask],
                     sh_coeffs=parents.sh_coeffs[~split_mask],
                 )
@@ -132,7 +138,8 @@ class GaussianTree(nn.Module):
 
                 # Combine: kept parents + new children
                 parts_means = []
-                parts_L = []
+                parts_quats = []
+                parts_log_scales = []
                 parts_op = []
                 parts_sh = []
                 parts_parent_means = []
@@ -140,24 +147,26 @@ class GaussianTree(nn.Module):
 
                 if keep_parents.num_gaussians > 0:
                     parts_means.append(keep_parents.means)
-                    parts_L.append(keep_parents.L_flat)
+                    parts_quats.append(keep_parents.quats)
+                    parts_log_scales.append(keep_parents.log_scales)
                     parts_op.append(keep_parents.opacities)
                     parts_sh.append(keep_parents.sh_coeffs)
                     parts_parent_means.append(keep_parents.means)
-                    parts_parent_idx.append(keep_indices)  # kept parent maps to itself
+                    parts_parent_idx.append(keep_indices)
 
                 if split_children is not None:
                     parts_means.append(split_children.means)
-                    parts_L.append(split_children.L_flat)
+                    parts_quats.append(split_children.quats)
+                    parts_log_scales.append(split_children.log_scales)
                     parts_op.append(split_children.opacities)
                     parts_sh.append(split_children.sh_coeffs)
                     parts_parent_means.append(split_parent_means)
-                    # Each split parent's original index, repeated 8×
                     parts_parent_idx.append(split_indices.repeat_interleave(8))
 
                 children = Gaussian(
                     means=torch.cat(parts_means, dim=0),
-                    L_flat=torch.cat(parts_L, dim=0),
+                    quats=torch.cat(parts_quats, dim=0),
+                    log_scales=torch.cat(parts_log_scales, dim=0),
                     opacities=torch.cat(parts_op, dim=0),
                     sh_coeffs=torch.cat(parts_sh, dim=0),
                 )
@@ -169,7 +178,8 @@ class GaussianTree(nn.Module):
 
         new_level = GaussianLevel(
             means=children.means.detach().clone(),
-            L_flat=children.L_flat.detach().clone(),
+            quats=children.quats.detach().clone(),
+            log_scales=children.log_scales.detach().clone(),
             opacities=children.opacities.detach().clone(),
             sh_coeffs=children.sh_coeffs.detach().clone(),
         )
@@ -183,7 +193,8 @@ class GaussianTree(nn.Module):
     def level_parameters(self, level: int):
         return [
             self.levels[level].means,
-            self.levels[level].L_flat,
+            self.levels[level].quats,
+            self.levels[level].log_scales,
             self.levels[level].opacities,
             self.levels[level].sh_coeffs,
         ]

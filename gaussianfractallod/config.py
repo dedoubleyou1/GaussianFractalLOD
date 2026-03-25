@@ -21,7 +21,8 @@ class Config:
     # Per-parameter learning rates (matching 3DGS conventions)
     lr_means: float = 1.6e-4       # position — low, with decay
     lr_means_final: float = 1.6e-6  # position decays 100×
-    lr_L_flat: float = 5e-3         # covariance (scale+rotation)
+    lr_quats: float = 1e-3          # rotation quaternions
+    lr_log_scales: float = 5e-3     # log-space scales
     lr_opacities: float = 2.5e-2    # opacity — high
     lr_sh_coeffs: float = 2.5e-3    # SH DC color
 

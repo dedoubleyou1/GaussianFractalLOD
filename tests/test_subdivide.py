@@ -6,8 +6,9 @@ from gaussianfractallod.subdivide import subdivide_to_8, _binary_cut_along_axis
 def _make_parent():
     return Gaussian(
         means=torch.tensor([[0.0, 0.0, 0.0]]),
-        L_flat=torch.tensor([[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]]),  # isotropic, scale=1
-        opacities=torch.tensor([[2.0]]),  # sigmoid(2) ≈ 0.88
+        quats=torch.tensor([[1.0, 0.0, 0.0, 0.0]]),   # identity quaternion
+        log_scales=torch.tensor([[0.0, 0.0, 0.0]]),     # unit scale
+        opacities=torch.tensor([[2.0]]),  # sigmoid(2) ~ 0.88
         sh_coeffs=torch.tensor([[0.5, 0.3, 0.1]]),
     )
 
@@ -25,14 +26,16 @@ def test_subdivide_produces_8x():
 
 
 def test_subdivide_batch():
+    N = 5
     parents = Gaussian(
-        means=torch.randn(5, 3),
-        L_flat=torch.zeros(5, 6),
-        opacities=torch.ones(5, 1) * 2.0,
-        sh_coeffs=torch.randn(5, 3),
+        means=torch.randn(N, 3),
+        quats=torch.tensor([[1.0, 0.0, 0.0, 0.0]]).expand(N, 4).contiguous(),
+        log_scales=torch.zeros(N, 3),
+        opacities=torch.ones(N, 1) * 2.0,
+        sh_coeffs=torch.randn(N, 3),
     )
     children = subdivide_to_8(parents)
-    assert children.num_gaussians == 40  # 5 × 8
+    assert children.num_gaussians == 40  # 5 x 8
 
 
 def test_subdivide_children_near_parent():
@@ -46,7 +49,8 @@ def test_subdivide_children_near_parent():
 def test_subdivide_children_covariance_positive_definite():
     parent = Gaussian(
         means=torch.tensor([[1.0, 2.0, 3.0]]),
-        L_flat=torch.randn(1, 6),  # random covariance
+        quats=torch.randn(1, 4),
+        log_scales=torch.randn(1, 3),
         opacities=torch.tensor([[2.0]]),
         sh_coeffs=torch.randn(1, 3),
     )

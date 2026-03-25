@@ -94,6 +94,7 @@ def evaluate(
     max_levels: int = 9,
     checkpoint_path: str | None = None,
 ):
+    vol.reload()  # Get latest checkpoints
     import torch
     import glob
     import logging
@@ -141,6 +142,7 @@ def export_plys(
     max_levels: int = 9,
 ) -> list[tuple[str, bytes]]:
     """Export PLY files for all levels. Returns list of (filename, ply_bytes)."""
+    vol.reload()  # Get latest checkpoints
     import torch
     import glob
     import io

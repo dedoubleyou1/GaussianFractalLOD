@@ -11,25 +11,29 @@ import os
 
 # Build the Modal image with all dependencies
 image = (
-    modal.Image.debian_slim(python_version="3.11")
-    .pip_install("torch", "torchvision", "gsplat", "torchmetrics", "lpips",
-                 "tensorboard", "numpy", "Pillow", "pyyaml")
-    .copy_local_dir("gaussianfractallod", "/app/gaussianfractallod")
-    .copy_local_dir("nerf_synthetic", "/app/nerf_synthetic")
-    .copy_local_file("setup.py", "/app/setup.py")
+    modal.Image.from_registry("nvidia/cuda:12.1.0-devel-ubuntu22.04", add_python="3.11")
+    .run_commands("apt-get update && apt-get install -y build-essential git && rm -rf /var/lib/apt/lists/*")
+    .pip_install("torch==2.5.1", "torchvision==0.20.1",
+                 index_url="https://download.pytorch.org/whl/cu121")
+    .pip_install("torchmetrics", "lpips", "tensorboard", "numpy", "Pillow",
+                 "pyyaml", "huggingface_hub", "ninja")
+    .pip_install("gsplat==1.4.0")  # 1.4 has pre-built CUDA; 1.5+ needs JIT
+    .add_local_dir("gaussianfractallod", remote_path="/app/gaussianfractallod", copy=True)
+    .add_local_file("setup.py", remote_path="/app/setup.py", copy=True)
     .run_commands("cd /app && pip install -e .")
 )
 
 app = modal.App("gaussianfractallod", image=image)
 
-# Persistent volume for checkpoints (survives across runs)
+# Persistent volumes
 vol = modal.Volume.from_name("gflod-checkpoints", create_if_missing=True)
+data_vol = modal.Volume.from_name("gflod-data", create_if_missing=True)
 
 
 @app.function(
     gpu="L4",  # L4 is cheapest with 24GB VRAM. Use "A100" for faster runs.
     timeout=3600,  # 1 hour max
-    volumes={"/checkpoints": vol},
+    volumes={"/checkpoints": vol, "/data": data_vol},
 )
 def train(
     scene: str = "lego",
@@ -39,16 +43,37 @@ def train(
     resume_from: str | None = None,
 ):
     import torch
+    import os
     import logging
     logging.basicConfig(level=logging.INFO)
 
     from gaussianfractallod.config import Config
     from gaussianfractallod.train import train as do_train
 
+    # Download dataset to volume if not present
+    data_dir = f"/data/nerf_synthetic/{scene}"
+    if not os.path.exists(f"{data_dir}/transforms_train.json"):
+        print(f"Downloading {scene} dataset...")
+        os.makedirs("/data/nerf_synthetic", exist_ok=True)
+        os.system("pip install -q huggingface_hub")
+        from huggingface_hub import snapshot_download
+        snapshot_download(
+            repo_id="phuckstnk63/nerf-synthetic",
+            repo_type="dataset",
+            local_dir="/data/nerf_synthetic_repo",
+            allow_patterns=f"nerf_synthetic/{scene}/*",
+        )
+        os.system(f"mv /data/nerf_synthetic_repo/nerf_synthetic/{scene} /data/nerf_synthetic/{scene}")
+        os.system("rm -rf /data/nerf_synthetic_repo")
+        data_vol.commit()
+        print(f"Dataset downloaded to {data_dir}")
+    else:
+        print(f"Dataset found at {data_dir}")
+
     checkpoint_dir = f"/checkpoints/{scene}_sh{sh_degree}_l{max_levels}"
 
     cfg = Config(
-        data_dir=f"/app/nerf_synthetic/{scene}",
+        data_dir=data_dir,
         num_roots=num_roots,
         sh_degree=sh_degree,
         max_levels=max_levels,
@@ -75,7 +100,7 @@ def train(
 @app.function(
     gpu="L4",
     timeout=600,
-    volumes={"/checkpoints": vol},
+    volumes={"/checkpoints": vol, "/data": data_vol},
 )
 def evaluate(
     scene: str = "lego",
@@ -106,7 +131,7 @@ def evaluate(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     roots, tree, meta = load_checkpoint(checkpoint_path, device=device)
 
-    test_dataset = NerfSyntheticDataset(f"/app/nerf_synthetic/{scene}", split="test")
+    test_dataset = NerfSyntheticDataset(f"/data/nerf_synthetic/{scene}", split="test")
     background = torch.tensor([1.0, 1.0, 1.0], device=device)
 
     results = {}

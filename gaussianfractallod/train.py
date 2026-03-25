@@ -279,14 +279,15 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, Gaussi
         split_mask = None
         prev_level = tree.levels[current_level - 1]
         if current_level > 1 and prev_level.grad_count.sum() > 0:
-            avg_grads = prev_level.avg_grad()
-            split_mask = avg_grads > cfg.split_grad_threshold
+            scores = prev_level.split_score()
+            split_mask = scores > cfg.split_grad_threshold
             n_split = split_mask.sum().item()
             n_total = split_mask.shape[0]
             logger.info(
                 f"Adaptive split: {n_split}/{n_total} parents selected "
                 f"(grad threshold={cfg.split_grad_threshold:.4f}, "
-                f"mean grad={avg_grads.mean():.4f})"
+                f"max_grad mean={scores.mean():.4f}, "
+                f"max_grad max={scores.max():.4f})"
             )
 
         # Add new level

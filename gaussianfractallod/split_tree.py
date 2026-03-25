@@ -30,9 +30,10 @@ class GaussianLevel(nn.Module):
         self.register_buffer("init_means", means.detach().clone())
         self.register_buffer("init_log_scales", log_scales.detach().clone())
 
-        # Gradient accumulator for adaptive splitting (not a parameter)
+        # Gradient tracking for adaptive splitting
         self.register_buffer("grad_accum", torch.zeros(means.shape[0]))
         self.register_buffer("grad_count", torch.zeros(means.shape[0]))
+        self.register_buffer("grad_max", torch.zeros(means.shape[0]))
 
     @property
     def num_gaussians(self) -> int:
@@ -50,12 +51,16 @@ class GaussianLevel(nn.Module):
     def accumulate_grad(self) -> None:
         """Accumulate position gradient magnitude for split decisions."""
         if self.means.grad is not None:
-            self.grad_accum += self.means.grad.detach().norm(dim=-1)
+            grad_norm = self.means.grad.detach().norm(dim=-1)
+            self.grad_accum += grad_norm
             self.grad_count += 1
+            self.grad_max = torch.max(self.grad_max, grad_norm)
 
-    def avg_grad(self) -> torch.Tensor:
-        """Average gradient magnitude per Gaussian."""
-        return self.grad_accum / (self.grad_count + 1e-8)
+    def split_score(self) -> torch.Tensor:
+        """Score for split decisions. Uses max gradient — if ANY view
+        shows this region needs more detail, split it. This catches
+        under-observed regions that get diluted by mean-based scoring."""
+        return self.grad_max
 
     def reset_opacity(self, value: float = -2.2) -> None:
         """Reset all opacities to a low value (inverse_sigmoid(0.1) ~ -2.2)."""

@@ -113,17 +113,31 @@ def _train_level_step(
 
     optimizer.step()
 
-    # Hard clamp aspect ratio: enforce max ratio between diagonal entries
+    # Hard clamp aspect ratio via eigenvalue clamping
+    # The L_flat diagonal clamp is insufficient because off-diagonal
+    # entries create shear that amplifies the actual aspect ratio.
+    # Instead, clamp the eigenvalues of the covariance matrix directly.
     if cfg.max_aspect_ratio > 0:
-        import math
-        max_log_ratio = math.log(cfg.max_aspect_ratio)
         with torch.no_grad():
-            diag = level_module.L_flat[:, [0, 2, 5]]
-            max_diag = diag.max(dim=-1, keepdim=True).values
-            clamped = diag.clamp(min=max_diag - max_log_ratio)
-            level_module.L_flat[:, 0] = clamped[:, 0]
-            level_module.L_flat[:, 2] = clamped[:, 1]
-            level_module.L_flat[:, 5] = clamped[:, 2]
+            gaussians_clamped = level_module.get_gaussians()
+            cov = gaussians_clamped.covariance()  # (N, 3, 3)
+            eigvals, eigvecs = torch.linalg.eigh(cov)  # eigvals sorted ascending
+            # Clamp: min eigenvalue >= max eigenvalue / max_aspect_ratio²
+            max_eigval = eigvals[:, 2:3]  # (N, 1)
+            min_allowed = max_eigval / (cfg.max_aspect_ratio ** 2)
+            clamped_eigvals = eigvals.clamp(min=min_allowed.expand_as(eigvals))
+            # Reconstruct covariance and Cholesky
+            cov_clamped = eigvecs @ torch.diag_embed(clamped_eigvals) @ eigvecs.transpose(-1, -2)
+            # Add eps for numerical stability
+            cov_clamped = cov_clamped + 1e-6 * torch.eye(3, device=cov.device).unsqueeze(0)
+            L_new = torch.linalg.cholesky(cov_clamped)
+            # Convert back to L_flat
+            level_module.L_flat[:, 0] = torch.log(L_new[:, 0, 0].clamp(min=1e-8))
+            level_module.L_flat[:, 1] = L_new[:, 1, 0]
+            level_module.L_flat[:, 2] = torch.log(L_new[:, 1, 1].clamp(min=1e-8))
+            level_module.L_flat[:, 3] = L_new[:, 2, 0]
+            level_module.L_flat[:, 4] = L_new[:, 2, 1]
+            level_module.L_flat[:, 5] = torch.log(L_new[:, 2, 2].clamp(min=1e-8))
 
     return loss.detach()
 

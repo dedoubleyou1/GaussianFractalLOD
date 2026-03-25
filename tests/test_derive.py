@@ -6,39 +6,44 @@ from gaussianfractallod.derive import derive_children, SplitVariables, _Phi
 def test_gaussian_construction():
     g = Gaussian(
         means=torch.zeros(1, 3),
-        L_flat=torch.zeros(1, 6),
+        quats=torch.tensor([[1.0, 0.0, 0.0, 0.0]]),
+        log_scales=torch.zeros(1, 3),
         opacities=torch.ones(1, 1),
         sh_coeffs=torch.zeros(1, 3),
     )
     assert g.means.shape == (1, 3)
-    assert g.L_flat.shape == (1, 6)
+    assert g.quats.shape == (1, 4)
+    assert g.log_scales.shape == (1, 3)
 
 
 def test_gaussian_num_gaussians():
     g = Gaussian(
         means=torch.zeros(5, 3),
-        L_flat=torch.zeros(5, 6),
+        quats=torch.tensor([[1.0, 0.0, 0.0, 0.0]]).expand(5, 4),
+        log_scales=torch.zeros(5, 3),
         opacities=torch.ones(5, 1),
         sh_coeffs=torch.zeros(5, 3),
     )
     assert g.num_gaussians == 5
 
 
-def test_L_matrix_shape():
+def test_rotation_matrix_shape():
     g = Gaussian(
         means=torch.zeros(3, 3),
-        L_flat=torch.zeros(3, 6),
+        quats=torch.tensor([[1.0, 0.0, 0.0, 0.0]]).expand(3, 4),
+        log_scales=torch.zeros(3, 3),
         opacities=torch.ones(3, 1),
         sh_coeffs=torch.zeros(3, 3),
     )
-    L = g.L_matrix()
-    assert L.shape == (3, 3, 3)
+    R = g.rotation_matrix()
+    assert R.shape == (3, 3, 3)
 
 
 def test_covariance_positive_definite():
     g = Gaussian(
         means=torch.zeros(2, 3),
-        L_flat=torch.randn(2, 6),
+        quats=torch.randn(2, 4),
+        log_scales=torch.randn(2, 3),
         opacities=torch.ones(2, 1),
         sh_coeffs=torch.zeros(2, 3),
     )
@@ -49,10 +54,11 @@ def test_covariance_positive_definite():
 
 
 def _make_parent(sh_dim=3):
-    L_flat = torch.tensor([[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]])
+    # Identity quaternion, unit scale (isotropic)
     return Gaussian(
         means=torch.tensor([[1.0, 2.0, 3.0]]),
-        L_flat=L_flat,
+        quats=torch.tensor([[1.0, 0.0, 0.0, 0.0]]),
+        log_scales=torch.zeros(1, 3),
         opacities=torch.tensor([[0.8]]),
         sh_coeffs=torch.randn(1, sh_dim),
     )

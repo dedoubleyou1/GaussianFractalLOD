@@ -1,12 +1,8 @@
-"""Rendering wrapper: auto-selects gsplat (CUDA) or tile-based PyTorch fallback.
-
-Same API regardless of backend. gsplat is fastest on CUDA.
-The PyTorch fallback uses bounding-box culling for efficiency
-and works on any device (CPU, MPS, CUDA).
-"""
+"""gsplat rendering wrapper: Gaussian batch -> rendered image."""
 
 import torch
-import math
+import torch.nn.functional as F
+from gsplat import rasterization
 from gaussianfractallod.gaussian import Gaussian
 
 # Try to import gsplat — may not be available on non-CUDA systems
@@ -29,9 +25,8 @@ def render_gaussians(
 ) -> torch.Tensor:
     """Render Gaussians to an image.
 
-    Auto-selects backend:
-      - CUDA + gsplat available → gsplat (fast)
-      - Otherwise → bounding-box PyTorch (slower but universal)
+    Passes quaternions and scales directly to gsplat, which is
+    faster than passing covariance matrices.
     """
     device = gaussians.means.device
 
@@ -69,6 +64,11 @@ def _render_gsplat(
     N = gaussians.num_gaussians
     covars = gaussians.covariance()
 
+    # Normalized quaternions and scales for gsplat
+    quats = F.normalize(gaussians.quats, dim=-1)  # (N, 4) wxyz
+    scales = gaussians.scales()  # (N, 3)
+
+    # Infer SH degree from coefficient count
     D = gaussians.sh_coeffs.shape[-1]
     if sh_degree is None:
         sh_degree = _infer_sh_degree(D)
@@ -80,8 +80,8 @@ def _render_gsplat(
 
     renders, alphas, meta = _gsplat_rasterization(
         means=gaussians.means,
-        quats=None,
-        scales=None,
+        quats=quats,
+        scales=scales,
         opacities=torch.sigmoid(gaussians.opacities.squeeze(-1)),
         colors=sh_coeffs_3,
         viewmats=viewmat.unsqueeze(0),
@@ -89,7 +89,6 @@ def _render_gsplat(
         width=width,
         height=height,
         sh_degree=sh_degree,
-        covars=covars,
     )
 
     render_img = renders[0]

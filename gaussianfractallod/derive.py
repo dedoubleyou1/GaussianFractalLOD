@@ -1,18 +1,19 @@
 """R&G-style binary split via truncated Gaussian moments.
 
 A parent Gaussian is split by a cut plane in its local frame.
-The two children are the moment-matched Gaussians of each half —
+The two children are the moment-matched Gaussians of each half --
 their positions, covariances, and orientations are derived from
 the cut plane geometry.
 
 Conservation guarantees (exact, by the law of total variance):
-  - Opacity: α_A + α_B = α_parent
-  - Center of mass: π_A μ_A + π_B μ_B = μ_parent
-  - Covariance: π_A [Σ_A + δ_Aδ_Aᵀ] + π_B [Σ_B + δ_Bδ_Bᵀ] = Σ_parent
-  - Color: π_A c_A + π_B c_B = c_parent
+  - Opacity: alpha_A + alpha_B = alpha_parent
+  - Center of mass: pi_A mu_A + pi_B mu_B = mu_parent
+  - Covariance: pi_A [Sigma_A + delta_A delta_A^T] + pi_B [Sigma_B + delta_B delta_B^T] = Sigma_parent
+  - Color: pi_A c_A + pi_B c_B = c_parent
 """
 
 import torch
+import torch.nn.functional as F
 import math
 from dataclasses import dataclass
 from gaussianfractallod.gaussian import Gaussian
@@ -43,13 +44,81 @@ class SplitVariables:
     cut_direction: (N, 3) unnormalized direction of the cut plane normal
         in parent's local frame. Will be normalized internally.
     cut_offset: (N,) position of the cut along the normal. Determines
-        mass partition: π_left = Φ(cut_offset).
+        mass partition: pi_left = Phi(cut_offset).
     color_split: (N, D) SH coefficient deviation.
     """
 
     cut_direction: torch.Tensor   # (N, 3) cut plane normal (unnormalized)
     cut_offset: torch.Tensor      # (N,) cut position along normal
     color_split: torch.Tensor     # (N, D) SH coefficient deviation
+
+
+def _quat_multiply(q1: torch.Tensor, q2: torch.Tensor) -> torch.Tensor:
+    """Multiply two batches of quaternions (wxyz convention).
+
+    Args:
+        q1: (N, 4) quaternions
+        q2: (N, 4) quaternions
+
+    Returns:
+        (N, 4) product quaternions
+    """
+    w1, x1, y1, z1 = q1[:, 0], q1[:, 1], q1[:, 2], q1[:, 3]
+    w2, x2, y2, z2 = q2[:, 0], q2[:, 1], q2[:, 2], q2[:, 3]
+
+    return torch.stack([
+        w1*w2 - x1*x2 - y1*y2 - z1*z2,
+        w1*x2 + x1*w2 + y1*z2 - z1*y2,
+        w1*y2 - x1*z2 + y1*w2 + z1*x2,
+        w1*z2 + x1*y2 - y1*x2 + z1*w2,
+    ], dim=-1)
+
+
+def _rotation_matrix_to_quat(R: torch.Tensor) -> torch.Tensor:
+    """Convert (N, 3, 3) rotation matrices to (N, 4) quaternions (wxyz).
+
+    Uses a stable method that handles all rotation cases.
+    """
+    batch_size = R.shape[0]
+    device = R.device
+
+    trace = R[:, 0, 0] + R[:, 1, 1] + R[:, 2, 2]
+    quat = torch.zeros(batch_size, 4, device=device, dtype=R.dtype)
+
+    s = torch.sqrt((trace + 1.0).clamp(min=1e-8)) * 2
+    mask = trace > 0
+    if mask.any():
+        quat[mask, 0] = 0.25 * s[mask]
+        quat[mask, 1] = (R[mask, 2, 1] - R[mask, 1, 2]) / s[mask]
+        quat[mask, 2] = (R[mask, 0, 2] - R[mask, 2, 0]) / s[mask]
+        quat[mask, 3] = (R[mask, 1, 0] - R[mask, 0, 1]) / s[mask]
+
+    mask2 = ~mask & (R[:, 0, 0] > R[:, 1, 1]) & (R[:, 0, 0] > R[:, 2, 2])
+    if mask2.any():
+        s2 = torch.sqrt((1.0 + R[mask2, 0, 0] - R[mask2, 1, 1] - R[mask2, 2, 2]).clamp(min=1e-8)) * 2
+        quat[mask2, 0] = (R[mask2, 2, 1] - R[mask2, 1, 2]) / s2
+        quat[mask2, 1] = 0.25 * s2
+        quat[mask2, 2] = (R[mask2, 0, 1] + R[mask2, 1, 0]) / s2
+        quat[mask2, 3] = (R[mask2, 0, 2] + R[mask2, 2, 0]) / s2
+
+    mask3 = ~mask & ~mask2 & (R[:, 1, 1] > R[:, 2, 2])
+    if mask3.any():
+        s3 = torch.sqrt((1.0 + R[mask3, 1, 1] - R[mask3, 0, 0] - R[mask3, 2, 2]).clamp(min=1e-8)) * 2
+        quat[mask3, 0] = (R[mask3, 0, 2] - R[mask3, 2, 0]) / s3
+        quat[mask3, 1] = (R[mask3, 0, 1] + R[mask3, 1, 0]) / s3
+        quat[mask3, 2] = 0.25 * s3
+        quat[mask3, 3] = (R[mask3, 1, 2] + R[mask3, 2, 1]) / s3
+
+    mask4 = ~mask & ~mask2 & ~mask3
+    if mask4.any():
+        s4 = torch.sqrt((1.0 + R[mask4, 2, 2] - R[mask4, 0, 0] - R[mask4, 1, 1]).clamp(min=1e-8)) * 2
+        quat[mask4, 0] = (R[mask4, 1, 0] - R[mask4, 0, 1]) / s4
+        quat[mask4, 1] = (R[mask4, 0, 2] + R[mask4, 2, 0]) / s4
+        quat[mask4, 2] = (R[mask4, 1, 2] + R[mask4, 2, 1]) / s4
+        quat[mask4, 3] = 0.25 * s4
+
+    quat = F.normalize(quat, dim=-1)
+    return quat
 
 
 def derive_children(
@@ -61,7 +130,7 @@ def derive_children(
     (where the parent has identity covariance). The children are
     moment-matched Gaussians of the two halves.
 
-    Children naturally orient to the cut plane — no free rotation
+    Children naturally orient to the cut plane -- no free rotation
     parameters needed. All conservation laws are exact.
     """
     N = parent.num_gaussians
@@ -74,8 +143,8 @@ def derive_children(
     d = split_vars.cut_offset  # (N,)
 
     # Mass partition from cut position via CDF
-    pi_left = _Phi(d).unsqueeze(-1)         # (N, 1) — left side (n·x ≤ d)
-    pi_right = (1.0 - pi_left)              # (N, 1) — right side (n·x > d)
+    pi_left = _Phi(d).unsqueeze(-1)         # (N, 1) -- left side (n.x <= d)
+    pi_right = (1.0 - pi_left)              # (N, 1) -- right side (n.x > d)
 
     # Clamp to avoid division by zero
     pi_left = pi_left.clamp(min=EPS)
@@ -86,7 +155,7 @@ def derive_children(
     alpha_right = pi_right * parent.opacities
 
     # Clamp cut_offset to prevent extreme hazard rates
-    # Beyond ±3, the truncated moments become numerically unstable
+    # Beyond +/-3, the truncated moments become numerically unstable
     d = d.clamp(-3.0, 3.0)
 
     # Hazard rates (inverse Mills ratios)
@@ -95,18 +164,22 @@ def derive_children(
     lambda_left = (phi_d / pi_left.squeeze(-1)).clamp(max=5.0)     # (N,)
 
     # Child means in parent's local frame
-    # μ_right = +λ_R · n,  μ_left = -λ_L · n
+    # mu_right = +lambda_R * n,  mu_left = -lambda_L * n
     mu_right_local = lambda_right.unsqueeze(-1) * n       # (N, 3)
     mu_left_local = -lambda_left.unsqueeze(-1) * n        # (N, 3)
 
-    # Convert to world frame: μ_child = μ_parent + L_p @ μ_local
-    L_p = parent.L_matrix()  # (N, 3, 3)
+    # Convert to world frame: mu_child = mu_parent + R_p @ diag(s) @ mu_local
+    R_p = parent.rotation_matrix()  # (N, 3, 3)
+    s_p = parent.scales()           # (N, 3)
+    # Scale then rotate: R_p @ diag(s) @ mu_local
+    scaled_right = s_p * mu_right_local   # (N, 3) element-wise
+    scaled_left = s_p * mu_left_local     # (N, 3) element-wise
 
-    mu_right = parent.means + torch.bmm(L_p, mu_right_local.unsqueeze(-1)).squeeze(-1)
-    mu_left = parent.means + torch.bmm(L_p, mu_left_local.unsqueeze(-1)).squeeze(-1)
+    mu_right = parent.means + torch.bmm(R_p, scaled_right.unsqueeze(-1)).squeeze(-1)
+    mu_left = parent.means + torch.bmm(R_p, scaled_left.unsqueeze(-1)).squeeze(-1)
 
     # Child covariances in parent's local frame
-    # Σ_local = I - c · nnᵀ  where c is the compression factor
+    # Sigma_local = I - c * nn^T  where c is the compression factor
     c_right = lambda_right * (lambda_right - d)    # (N,)
     c_left = lambda_left * (lambda_left + d)       # (N,)
 
@@ -114,29 +187,38 @@ def derive_children(
     c_right = c_right.clamp(min=0.0, max=1.0 - EPS)
     c_left = c_left.clamp(min=0.0, max=1.0 - EPS)
 
-    # Σ_local = I - c · nnᵀ
+    # Sigma_local = I - c * nn^T
     # Eigenvalues: (1 - c) along n, 1.0 perpendicular to n
-    # L_child = L_parent @ R_n @ diag(1, 1, √(1-c))
-    # where R_n rotates the z-axis to align with n
+    # The child's Sigma in world = R_p @ diag(s) @ Sigma_local @ diag(s) @ R_p^T
+    # = R_p @ diag(s) @ R_n @ diag(1, 1, 1-c) @ R_n^T @ diag(s) @ R_p^T
+    # = (R_p @ R_n) @ diag(s_0, s_1, s_2*sqrt(1-c)) ^2 @ (R_p @ R_n)^T
+    # So child rotation = R_p @ R_n, child scales = (s_0, s_1, s_2*sqrt(1-c))
 
-    # Build rotation R_n that maps z-axis → n
+    # Build rotation R_n that maps z-axis to n
     R_right = _rotation_z_to_n(n)  # (N, 3, 3)
     R_left = R_right  # Same cut plane, same rotation
 
-    # Scale: (1, 1, √(1-c)) — compress along the cut normal
-    scale_right = torch.ones(N, 3, device=device)
-    scale_right[:, 2] = torch.sqrt((1.0 - c_right).clamp(min=EPS))
+    # Child rotation in world: R_child = R_parent @ R_n
+    R_child_right = R_p @ R_right  # (N, 3, 3)
+    R_child_left = R_p @ R_left    # (N, 3, 3)
 
-    scale_left = torch.ones(N, 3, device=device)
-    scale_left[:, 2] = torch.sqrt((1.0 - c_left).clamp(min=EPS))
+    # Convert rotation matrices to quaternions
+    q_child_right = _rotation_matrix_to_quat(R_child_right)  # (N, 4)
+    q_child_left = _rotation_matrix_to_quat(R_child_left)    # (N, 4)
 
-    # L_child = L_parent @ R_n @ diag(scale)
-    L_right = L_p @ R_right * scale_right.unsqueeze(-2)  # (N,3,3)
-    L_left = L_p @ R_left * scale_left.unsqueeze(-2)
+    # Child scales: parent scales, with z-axis scaled by sqrt(1-c)
+    # In the R_n frame, z-axis is aligned with cut normal n
+    # Permute parent scales into R_n frame, then adjust z
+    # Since R_n maps z->n, the scales in the R_n frame are still (s0, s1, s2)
+    # but the compression is along z in the R_n frame
+    scale_right = s_p.clone()
+    scale_right[:, 2] = s_p[:, 2] * torch.sqrt((1.0 - c_right).clamp(min=EPS))
 
-    # Convert L matrices to flat representation
-    L_right_flat = _L_matrix_to_flat(L_right)
-    L_left_flat = _L_matrix_to_flat(L_left)
+    scale_left = s_p.clone()
+    scale_left[:, 2] = s_p[:, 2] * torch.sqrt((1.0 - c_left).clamp(min=EPS))
+
+    log_scales_right = torch.log(scale_right.clamp(min=EPS))
+    log_scales_left = torch.log(scale_left.clamp(min=EPS))
 
     # Color conservation
     delta_c = split_vars.color_split
@@ -144,11 +226,11 @@ def derive_children(
     c_b = parent.sh_coeffs - (pi_right / (pi_left + EPS)) * delta_c
 
     child_right = Gaussian(
-        means=mu_right, L_flat=L_right_flat,
+        means=mu_right, quats=q_child_right, log_scales=log_scales_right,
         opacities=alpha_right, sh_coeffs=c_a,
     )
     child_left = Gaussian(
-        means=mu_left, L_flat=L_left_flat,
+        means=mu_left, quats=q_child_left, log_scales=log_scales_left,
         opacities=alpha_left, sh_coeffs=c_b,
     )
 
@@ -158,8 +240,8 @@ def derive_children(
 def _rotation_z_to_n(n: torch.Tensor) -> torch.Tensor:
     """Build rotation matrix that maps z-axis to unit vector n.
 
-    Uses Rodrigues' formula. For n ≈ z, returns near-identity.
-    For n ≈ -z, uses a stable fallback.
+    Uses Rodrigues' formula. For n ~ z, returns near-identity.
+    For n ~ -z, uses a stable fallback.
 
     Args:
         n: (N, 3) unit vectors.
@@ -172,22 +254,22 @@ def _rotation_z_to_n(n: torch.Tensor) -> torch.Tensor:
 
     z = torch.tensor([0.0, 0.0, 1.0], device=device).expand(N, 3)
 
-    # Cross product z × n = rotation axis
+    # Cross product z x n = rotation axis
     cross = torch.cross(z, n, dim=-1)  # (N, 3)
     sin_angle = cross.norm(dim=-1, keepdim=True)  # (N, 1)
     cos_angle = (z * n).sum(dim=-1, keepdim=True)  # (N, 1) = n_z
 
-    # Rodrigues: R = I + [k]_× + [k]_×² · (1-cos)/sin²
+    # Rodrigues: R = I + [k]_x + [k]_x^2 * (1-cos)/sin^2
     # where k = cross / |cross|
-    # Handle degenerate case: n ≈ z (sin ≈ 0)
+    # Handle degenerate case: n ~ z (sin ~ 0)
     near_identity = (sin_angle.squeeze(-1) < 1e-6)
-    # Handle n ≈ -z
+    # Handle n ~ -z
     near_flip = (cos_angle.squeeze(-1) < -1.0 + 1e-6)
 
     # Normalize axis
     axis = cross / (sin_angle + EPS)  # (N, 3)
 
-    # Skew-symmetric matrix [k]_×
+    # Skew-symmetric matrix [k]_x
     K = torch.zeros(N, 3, 3, device=device)
     K[:, 0, 1] = -axis[:, 2]
     K[:, 0, 2] = axis[:, 1]
@@ -208,29 +290,3 @@ def _rotation_z_to_n(n: torch.Tensor) -> torch.Tensor:
         R[near_flip] = flip
 
     return R
-
-
-def _L_matrix_to_flat(L: torch.Tensor) -> torch.Tensor:
-    """Convert (N, 3, 3) lower-triangular matrix to (N, 6) flat representation.
-
-    Since L may not be lower-triangular after rotation, we compute the
-    Cholesky factorization of L @ L.T to get a proper lower-triangular form.
-    """
-    # Compute covariance
-    cov = L @ L.transpose(-1, -2)
-
-    # Add small diagonal for stability
-    cov = cov + EPS * torch.eye(3, device=cov.device).unsqueeze(0)
-
-    # Cholesky to get proper lower-triangular
-    L_proper = torch.linalg.cholesky(cov)
-
-    # Flatten with log on diagonal
-    return torch.stack([
-        torch.log(L_proper[:, 0, 0].clamp(min=EPS)),
-        L_proper[:, 1, 0],
-        torch.log(L_proper[:, 1, 1].clamp(min=EPS)),
-        L_proper[:, 2, 0],
-        L_proper[:, 2, 1],
-        torch.log(L_proper[:, 2, 2].clamp(min=EPS)),
-    ], dim=-1)

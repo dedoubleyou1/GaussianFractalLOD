@@ -14,7 +14,8 @@ def test_render_produces_image():
 
     gaussians = Gaussian(
         means=torch.tensor([[0.0, 0.0, 3.0]], device=device),
-        scales=torch.tensor([[-1.0, -1.0, -1.0]], device=device),
+        quats=torch.tensor([[1.0, 0.0, 0.0, 0.0]], device=device),
+        log_scales=torch.tensor([[-1.0, -1.0, -1.0]], device=device),
         opacities=torch.tensor([[5.0]], device=device),
         sh_coeffs=torch.tensor([[1.0, 0.0, 0.0]], device=device),
     )

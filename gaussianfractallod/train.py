@@ -95,10 +95,12 @@ def _train_level_step(
     log_ratio = gaussians.L_flat[:, diag_idx] - level_module.init_L_flat[:, diag_idx]
     scale_reg = torch.exp(log_ratio * log_ratio).mean()  # squared instead of abs (MPS-friendly)
 
-    # Aspect ratio: penalize difference between largest and smallest axes
-    # Pushes toward isotropic regardless of initialization
-    diag_vals = gaussians.L_flat[:, diag_idx]
-    aspect_reg = (diag_vals.max(dim=-1).values - diag_vals.min(dim=-1).values).pow(2).mean()
+    # Aspect ratio: penalize based on actual eigenvalues of covariance
+    # (L_flat diagonal misses off-diagonal shear contribution)
+    cov = gaussians.covariance()  # (N, 3, 3)
+    eigvals = torch.linalg.eigvalsh(cov)  # (N, 3) sorted ascending
+    log_eigvals = torch.log(eigvals.clamp(min=1e-8))
+    aspect_reg = (log_eigvals[:, 2] - log_eigvals[:, 0]).pow(2).mean()  # log(max/min)²
 
     total_loss = (
         loss

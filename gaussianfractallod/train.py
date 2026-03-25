@@ -100,7 +100,11 @@ def _train_level_step(
 
     # Scale: compare log_scales to init_log_scales (log-ratio)
     log_ratio = gaussians.log_scales - level_module.init_log_scales
-    scale_reg = torch.exp(log_ratio.abs()).mean()
+    scale_reg = torch.exp(log_ratio * log_ratio).mean()
+
+    # Aspect ratio: directly from log_scales (no eigendecomposition needed!)
+    aspect_reg = (gaussians.log_scales.max(dim=-1).values
+                  - gaussians.log_scales.min(dim=-1).values).pow(2).mean()
 
     total_loss = (
         loss
@@ -117,6 +121,15 @@ def _train_level_step(
 
     # Normalize quaternions after optimizer step
     _normalize_quaternions(level_module)
+
+    # Hard clamp aspect ratio — trivial with log_scales (no eigendecomposition)
+    if cfg.max_aspect_ratio > 0:
+        import math
+        max_log_ratio = math.log(cfg.max_aspect_ratio)
+        with torch.no_grad():
+            ls = level_module.log_scales
+            max_ls = ls.max(dim=-1, keepdim=True).values
+            ls.clamp_(min=max_ls - max_log_ratio)
 
     return loss.detach()
 

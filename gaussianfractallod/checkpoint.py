@@ -62,7 +62,8 @@ def load_checkpoint(
         for i, (n, sh_dim) in enumerate(zip(level_sizes, sh_dims)):
             level = GaussianLevel(
                 means=torch.zeros(n, 3),
-                L_flat=torch.zeros(n, 6),
+                quats=torch.zeros(n, 4),
+                log_scales=torch.zeros(n, 3),
                 opacities=torch.zeros(n, 1),
                 sh_coeffs=torch.zeros(n, sh_dim),
             )

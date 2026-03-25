@@ -130,6 +130,50 @@ def evaluate(
     return results
 
 
+@app.function(
+    gpu="L4",
+    timeout=600,
+    volumes={"/checkpoints": vol},
+)
+def export_plys(
+    scene: str = "lego",
+    sh_degree: int = 0,
+    max_levels: int = 9,
+) -> list[tuple[str, bytes]]:
+    """Export PLY files for all levels. Returns list of (filename, ply_bytes)."""
+    import torch
+    import glob
+    import io
+
+    from gaussianfractallod.checkpoint import load_checkpoint
+    from gaussianfractallod.export_ply import export_ply
+
+    checkpoint_dir = f"/checkpoints/{scene}_sh{sh_degree}_l{max_levels}"
+    ckpts = sorted(glob.glob(f"{checkpoint_dir}/phase2_level_*.pt"))
+    if not ckpts:
+        print(f"No checkpoints found in {checkpoint_dir}")
+        return []
+
+    checkpoint_path = ckpts[-1]
+    print(f"Loading: {checkpoint_path}")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    roots, tree, meta = load_checkpoint(checkpoint_path, device=device)
+
+    results = []
+    for depth in range(tree.depth):
+        with torch.no_grad():
+            g = tree.get_gaussians_at_depth(depth)
+        filename = f"{scene}_level_{depth}.ply"
+        local_path = f"/tmp/{filename}"
+        export_ply(g, local_path, sh_degree=sh_degree)
+        with open(local_path, "rb") as f:
+            ply_bytes = f.read()
+        results.append((filename, ply_bytes))
+        print(f"Exported level {depth}: {g.num_gaussians} G, {len(ply_bytes)/1024:.0f} KB")
+
+    return results
+
+
 @app.local_entrypoint()
 def main(
     scene: str = "lego",
@@ -137,8 +181,23 @@ def main(
     sh_degree: int = 0,
     max_levels: int = 9,
     eval_only: bool = False,
+    export: bool = False,
     resume: str | None = None,
 ):
+    if export:
+        print("Exporting PLY files...")
+        plys = export_plys.remote(scene=scene, sh_degree=sh_degree, max_levels=max_levels)
+        import os
+        out_dir = f"exports/{scene}"
+        os.makedirs(out_dir, exist_ok=True)
+        for filename, ply_bytes in plys:
+            path = f"{out_dir}/{filename}"
+            with open(path, "wb") as f:
+                f.write(ply_bytes)
+            print(f"Saved {path} ({len(ply_bytes)/1024:.0f} KB)")
+        print(f"\nExported {len(plys)} PLY files to {out_dir}/")
+        return
+
     if eval_only:
         results = evaluate.remote(scene=scene, sh_degree=sh_degree, max_levels=max_levels)
         print("\nResults:", results)

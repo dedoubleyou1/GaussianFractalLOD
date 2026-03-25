@@ -56,17 +56,21 @@ def train(
         print(f"Downloading {scene} dataset (all splits)...")
         os.makedirs("/data/nerf_synthetic", exist_ok=True)
         from huggingface_hub import snapshot_download
+        # Download complete scene including train/test/val subdirs
         snapshot_download(
             repo_id="phuckstnk63/nerf-synthetic",
             repo_type="dataset",
             local_dir="/data/nerf_synthetic_repo",
-            allow_patterns=f"nerf_synthetic/{scene}/**",
         )
         os.system(f"rm -rf /data/nerf_synthetic/{scene}")
         os.system(f"mv /data/nerf_synthetic_repo/nerf_synthetic/{scene} /data/nerf_synthetic/{scene}")
         os.system("rm -rf /data/nerf_synthetic_repo")
+        # Verify
+        test_exists = os.path.exists(f"{data_dir}/transforms_test.json")
+        train_exists = os.path.exists(f"{data_dir}/transforms_train.json")
+        test_imgs = len(os.listdir(f"{data_dir}/test")) if os.path.exists(f"{data_dir}/test") else 0
+        print(f"Dataset: train={train_exists}, test={test_exists}, test_imgs={test_imgs}")
         data_vol.commit()
-        print(f"Dataset downloaded to {data_dir}")
     else:
         print(f"Dataset found at {data_dir}")
 

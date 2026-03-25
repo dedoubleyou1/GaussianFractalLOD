@@ -21,6 +21,8 @@ image = (
     .add_local_dir("gaussianfractallod", remote_path="/app/gaussianfractallod", copy=True)
     .add_local_file("setup.py", remote_path="/app/setup.py", copy=True)
     .run_commands("cd /app && pip install -e .")
+    # Include lego scene in image (complete dataset from repo via LFS)
+    .add_local_dir("nerf_synthetic/lego", remote_path="/app/nerf_synthetic/lego", copy=True)
 )
 
 app = modal.App("gaussianfractallod", image=image)
@@ -50,29 +52,9 @@ def train(
     from gaussianfractallod.config import Config
     from gaussianfractallod.train import train as do_train
 
-    # Download dataset to volume if not present
-    data_dir = f"/data/nerf_synthetic/{scene}"
-    if not os.path.exists(f"{data_dir}/transforms_test.json"):
-        print(f"Downloading {scene} dataset (all splits)...")
-        os.makedirs("/data/nerf_synthetic", exist_ok=True)
-        from huggingface_hub import snapshot_download
-        # Download complete scene including train/test/val subdirs
-        snapshot_download(
-            repo_id="phuckstnk63/nerf-synthetic",
-            repo_type="dataset",
-            local_dir="/data/nerf_synthetic_repo",
-        )
-        os.system(f"rm -rf /data/nerf_synthetic/{scene}")
-        os.system(f"mv /data/nerf_synthetic_repo/nerf_synthetic/{scene} /data/nerf_synthetic/{scene}")
-        os.system("rm -rf /data/nerf_synthetic_repo")
-        # Verify
-        test_exists = os.path.exists(f"{data_dir}/transforms_test.json")
-        train_exists = os.path.exists(f"{data_dir}/transforms_train.json")
-        test_imgs = len(os.listdir(f"{data_dir}/test")) if os.path.exists(f"{data_dir}/test") else 0
-        print(f"Dataset: train={train_exists}, test={test_exists}, test_imgs={test_imgs}")
-        data_vol.commit()
-    else:
-        print(f"Dataset found at {data_dir}")
+    # Data is bundled in the image from local repo (complete via Git LFS)
+    data_dir = f"/app/nerf_synthetic/{scene}"
+    print(f"Dataset at {data_dir}")
 
     checkpoint_dir = f"/checkpoints/{scene}_sh{sh_degree}_l{max_levels}"
 
@@ -135,7 +117,7 @@ def evaluate(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     roots, tree, meta = load_checkpoint(checkpoint_path, device=device)
 
-    test_dataset = NerfSyntheticDataset(f"/data/nerf_synthetic/{scene}", split="test")
+    test_dataset = NerfSyntheticDataset(f"/app/nerf_synthetic/{scene}", split="test")
     background = torch.tensor([1.0, 1.0, 1.0], device=device)
 
     results = {}

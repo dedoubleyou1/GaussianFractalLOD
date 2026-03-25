@@ -113,6 +113,18 @@ def _train_level_step(
 
     optimizer.step()
 
+    # Hard clamp aspect ratio: enforce max ratio between diagonal entries
+    if cfg.max_aspect_ratio > 0:
+        import math
+        max_log_ratio = math.log(cfg.max_aspect_ratio)
+        with torch.no_grad():
+            diag = level_module.L_flat[:, [0, 2, 5]]
+            max_diag = diag.max(dim=-1, keepdim=True).values
+            clamped = diag.clamp(min=max_diag - max_log_ratio)
+            level_module.L_flat[:, 0] = clamped[:, 0]
+            level_module.L_flat[:, 2] = clamped[:, 1]
+            level_module.L_flat[:, 5] = clamped[:, 2]
+
     return loss.detach()
 
 

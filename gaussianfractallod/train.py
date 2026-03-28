@@ -121,24 +121,15 @@ def _train_level_step(
     else:
         pos_reg = torch.tensor(0.0, device=loss.device)
 
-    # Scale: penalize volume change (mean-of-axes), free to change shape
-    mean_log_ratio = (gaussians.log_scales - level_module.init_log_scales).mean(dim=-1)
-    scale_reg = torch.exp(mean_log_ratio * mean_log_ratio).mean()
-
-    # Aspect ratio: absolute dead-zone + exp wall. No penalty up to dead_zone
-    # aspect ratio, then exp(x²) ramps up. Anchored to 1:1, not parent shape.
-    import math
-    spread = (gaussians.log_scales.max(dim=-1).values
-              - gaussians.log_scales.min(dim=-1).values)
-    dead_zone = math.log(cfg.aspect_dead_zone)
-    delta_spread = torch.clamp(spread - dead_zone, min=0.0)
-    aspect_reg = torch.exp(delta_spread * delta_spread).mean()
+    # Per-axis scale regularization: penalizes each axis independently against init.
+    # Acts as both size and aspect constraint in one term.
+    log_ratio = gaussians.log_scales - level_module.init_log_scales  # (N, 3)
+    scale_reg = torch.exp(log_ratio * log_ratio).mean()
 
     total_loss = (
         loss
         + cfg.reg_scale_weight * scale_reg
         + cfg.reg_position_weight * pos_reg
-        + cfg.reg_aspect_weight * aspect_reg
     )
     total_loss.backward()
 

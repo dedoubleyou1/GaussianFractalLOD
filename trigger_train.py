@@ -9,7 +9,7 @@ Usage:
 
     # With config overrides:
     python trigger_train.py --run-name test2 --max-levels 12 \
-        --set reg_aspect_weight=0.003 child_opacity_scale=0.2
+        --set reg_scale_weight=0.01 child_opacity_scale=0.2
 
     # Resume from checkpoint:
     python trigger_train.py --run-name test1 --max-levels 12 \
@@ -35,7 +35,7 @@ def main():
     parser.add_argument("--no-eval", action="store_true")
     parser.add_argument(
         "--set", nargs="*", default=[],
-        help="Config overrides as key=value pairs, e.g. --set reg_aspect_weight=0.003",
+        help="Config overrides as key=value pairs, e.g. --set reg_scale_weight=0.01",
     )
     args = parser.parse_args()
 

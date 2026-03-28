@@ -367,9 +367,17 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, Gaussi
 
         best_loss = float("inf")
         best_loss_epoch = 0
+        best_weights = None
         epoch_losses = []
         epoch_loss_accum = 0.0
         epoch_loss_count = 0
+
+        # Early stopping state (running avg with window=3, patience=6)
+        _ES_WINDOW = 3
+        _ES_PATIENCE = 6
+        best_running_avg = float("inf")
+        best_running_epoch = 0
+        stopped_early = False
 
         for step in range(level_iters):
             # Decay position LR
@@ -417,24 +425,57 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, Gaussi
                 best_loss_epoch = step / num_views
 
             if (step + 1) % num_views == 0:
-                epoch = (step + 1) / num_views
+                epoch = int((step + 1) / num_views)
                 avg_loss = epoch_loss_accum / epoch_loss_count
                 epoch_losses.append(avg_loss)
                 logger.info(
-                    f"Level {current_level} epoch {epoch:.0f}: "
+                    f"Level {current_level} epoch {epoch}: "
                     f"loss={avg_loss:.6f}"
                 )
                 epoch_loss_accum = 0.0
                 epoch_loss_count = 0
 
+                # Save best weights based on epoch avg loss
+                if avg_loss < best_loss - 1e-6 or best_weights is None:
+                    best_weights = {
+                        name: p.data.clone()
+                        for name, p in level_module.named_parameters()
+                    }
+
+                # Early stopping: running average of epoch losses
+                window_start = max(0, len(epoch_losses) - _ES_WINDOW)
+                running_avg = sum(epoch_losses[window_start:]) / (len(epoch_losses) - window_start)
+
+                if running_avg < best_running_avg - 1e-6:
+                    best_running_avg = running_avg
+                    best_running_epoch = epoch
+                elif epoch - best_running_epoch >= _ES_PATIENCE:
+                    logger.info(
+                        f"Level {current_level} early stop at epoch {epoch} "
+                        f"(no improvement since epoch {best_running_epoch})"
+                    )
+                    stopped_early = True
+                    break
+
+        # Restore best weights
+        if best_weights is not None:
+            with torch.no_grad():
+                for name, p in level_module.named_parameters():
+                    if name in best_weights:
+                        p.data.copy_(best_weights[name])
+            logger.info(f"Restored best weights for level {current_level}")
+
         # Freeze this level
         for param in tree.level_parameters(current_level):
             param.requires_grad_(False)
 
+        actual_epochs = len(epoch_losses)
         convergence_info = {
             "best_loss": best_loss,
             "best_loss_epoch": best_loss_epoch,
             "total_epochs": cfg.level_epochs,
+            "actual_epochs": actual_epochs,
+            "stopped_early": stopped_early,
             "epoch_losses": epoch_losses,
             "num_gaussians": num_gaussians,
             "resolution": level_res,
@@ -444,11 +485,11 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, Gaussi
             roots, tree, phase=2, level=level_idx + 1,
             convergence=convergence_info,
         )
-        epochs_since_best = cfg.level_epochs - best_loss_epoch
         logger.info(
             f"Level {current_level} complete. {num_gaussians} Gaussians. "
-            f"Best loss={best_loss:.6f} at epoch {best_loss_epoch:.1f} "
-            f"({epochs_since_best:.1f} epochs ago). Saved."
+            f"Best loss={best_loss:.6f}. "
+            f"{actual_epochs}/{cfg.level_epochs} epochs"
+            f"{' (early stop)' if stopped_early else ''}. Saved."
         )
 
     writer.close()

@@ -121,15 +121,24 @@ def _train_level_step(
     else:
         pos_reg = torch.tensor(0.0, device=loss.device)
 
-    # Per-axis scale regularization: penalizes each axis independently against init.
-    # Acts as both size and aspect constraint in one term.
-    log_ratio = gaussians.log_scales - level_module.init_log_scales  # (N, 3)
-    scale_reg = torch.exp(log_ratio * log_ratio).mean()
+    # Scale: penalize volume change (mean-of-axes), free to change shape
+    mean_log_ratio = (gaussians.log_scales - level_module.init_log_scales).mean(dim=-1)
+    scale_reg = torch.exp(mean_log_ratio * mean_log_ratio).mean()
+
+    # Aspect ratio: absolute dead-zone + exp wall. No penalty up to dead_zone
+    # aspect ratio, then exp(x²) ramps up. Anchored to 1:1, not parent shape.
+    import math
+    spread = (gaussians.log_scales.max(dim=-1).values
+              - gaussians.log_scales.min(dim=-1).values)
+    dead_zone = math.log(cfg.aspect_dead_zone)
+    delta_spread = torch.clamp(spread - dead_zone, min=0.0)
+    aspect_reg = torch.exp(delta_spread * delta_spread).mean()
 
     total_loss = (
         loss
         + cfg.reg_scale_weight * scale_reg
         + cfg.reg_position_weight * pos_reg
+        + cfg.reg_aspect_weight * aspect_reg
     )
     total_loss.backward()
 
@@ -313,16 +322,17 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, Gaussi
                 f"Adaptive split: {n_split} subdivide, {n_keep} keep, "
                 f"{n_exclude} exclude (of {n_total} parents)"
             )
-            logger.info(
-                f"  Grad stats (alive parents): "
-                f"max_grad: mean={max_grad[alive].mean():.5f}, "
-                f"median={max_grad[alive].median():.5f}, "
-                f"p90={max_grad[alive].quantile(0.9):.5f}, "
-                f"max={max_grad[alive].max():.5f} | "
-                f"mean_grad: mean={mean_grad[alive].mean():.6f}, "
-                f"median={mean_grad[alive].median():.6f}, "
-                f"max={mean_grad[alive].max():.6f}"
-            )
+            if alive.any():
+                logger.info(
+                    f"  Grad stats (alive parents): "
+                    f"max_grad: mean={max_grad[alive].mean():.5f}, "
+                    f"median={max_grad[alive].median():.5f}, "
+                    f"p90={max_grad[alive].quantile(0.9):.5f}, "
+                    f"max={max_grad[alive].max():.5f} | "
+                    f"mean_grad: mean={mean_grad[alive].mean():.6f}, "
+                    f"median={mean_grad[alive].median():.6f}, "
+                    f"max={mean_grad[alive].max():.6f}"
+                )
 
         # Add new level
         if tree.depth <= current_level:

@@ -35,9 +35,11 @@ class Config:
     child_opacity_scale: float = 0.1
 
     # Regularization
-    reg_scale_weight: float = 0.01    # per-axis scale reg (size + aspect)
+    reg_scale_weight: float = 0.01
     reg_position_weight: float = 0.01
-    max_aspect_ratio: float = 100.0   # hard clamp ceiling
+    reg_aspect_weight: float = 0.001  # exp(spread²) wall beyond dead zone
+    aspect_dead_zone: float = 2.0  # no aspect penalty up to this ratio beyond init
+    max_aspect_ratio: float = 100.0  # hard clamp ceiling
 
     # SH degree
     sh_degree: int = 3

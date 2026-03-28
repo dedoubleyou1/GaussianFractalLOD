@@ -57,7 +57,10 @@ class GaussianLevel(nn.Module):
             self.grad_max = torch.max(self.grad_max, grad_norm)
 
     def split_scores(self) -> tuple[torch.Tensor, torch.Tensor]:
-        """Scores for split decisions.
+        """Scores for split decisions, boosted by aspect ratio.
+
+        Elongated Gaussians get their gradient scores multiplied by their
+        aspect ratio, so stretching increases the chance of splitting.
 
         Returns:
             (max_grad, mean_grad) — two independent signals:
@@ -65,7 +68,10 @@ class GaussianLevel(nn.Module):
             - mean_grad: average gradient across views (catches coverage gaps)
         """
         mean_grad = self.grad_accum / self.grad_count.clamp(min=1)
-        return self.grad_max, mean_grad
+        # Boost split scores by aspect ratio: elongated Gaussians split more easily
+        spread = self.log_scales.max(dim=-1).values - self.log_scales.min(dim=-1).values
+        aspect = spread.exp()  # 1.0 for isotropic, higher for elongated
+        return self.grad_max * aspect, mean_grad * aspect
 
     def reset_opacity(self, value: float = -2.2, keep_above: float = 0.5) -> None:
         """Reset low-opacity Gaussians. High-opacity ones keep their values.

@@ -121,13 +121,18 @@ def _train_level_step(
     else:
         pos_reg = torch.tensor(0.0, device=loss.device)
 
-    # Scale: compare log_scales to init_log_scales (log-ratio)
-    log_ratio = gaussians.log_scales - level_module.init_log_scales
-    scale_reg = torch.exp(log_ratio * log_ratio).mean()
+    # Scale: penalize volume change (mean-of-axes), free to change shape
+    mean_log_ratio = (gaussians.log_scales - level_module.init_log_scales).mean(dim=-1)
+    scale_reg = torch.exp(mean_log_ratio * mean_log_ratio).mean()
 
-    # Aspect ratio: directly from log_scales (no eigendecomposition needed!)
-    aspect_reg = (gaussians.log_scales.max(dim=-1).values
-                  - gaussians.log_scales.min(dim=-1).values).pow(2).mean()
+    # Aspect ratio: absolute dead-zone + exp wall. No penalty up to dead_zone
+    # aspect ratio, then exp(x²) ramps up. Anchored to 1:1, not parent shape.
+    import math
+    spread = (gaussians.log_scales.max(dim=-1).values
+              - gaussians.log_scales.min(dim=-1).values)
+    dead_zone = math.log(cfg.aspect_dead_zone)
+    delta_spread = torch.clamp(spread - dead_zone, min=0.0)
+    aspect_reg = torch.exp(delta_spread * delta_spread).mean()
 
     total_loss = (
         loss
@@ -157,53 +162,44 @@ def _train_level_step(
     return loss.detach()
 
 
-def _get_level_scale(level: int, max_levels: int) -> float:
-    """Image scale for a given level. Finest level = full res, ~halving pixels going coarser.
+def _get_level_resolution(level: int) -> int:
+    """Training resolution for a level. Anchored from bottom (level 0 = 32px).
 
-    Resolution steps: 800, 600, 400, 300, 200, 150, 100, 75, 50, 35, ...
-    Roughly halving total pixels each step.
+    Growth: √2× per level (doubling pixel count). Derived from observed
+    Gaussian scale shrinkage (~0.64× per level) and minimum projection
+    target (~3σ pixels). Caps at 800px (dataset resolution).
+
+    Every even level is a power of 2: 32, 64, 128, 256, 512.
     """
-    # Resolution steps from finest to coarsest (roughly halving pixels)
-    _RES_STEPS = [800, 600, 400, 300, 200, 150, 100, 75, 50, 35, 25, 20, 15, 12]
-
-    # Iteration steps (matching resolution schedule)
-    _ITER_STEPS = [32000, 24000, 16000, 12000, 8000, 6000, 4000, 3000, 2000, 1500, 1000, 800, 600, 500]
-
-    steps_from_top = max_levels - level
-    if steps_from_top < len(_RES_STEPS):
-        res = _RES_STEPS[steps_from_top]
-    else:
-        res = _RES_STEPS[-1]
-
-    return res / 800.0
-
-
-def _get_level_iterations(level: int, max_levels: int) -> int:
-    """Training iterations for a given level. More for finer levels."""
-    _ITER_STEPS = [32000, 24000, 16000, 12000, 8000, 6000, 4000, 3000, 2000, 1500, 1000, 800, 600, 500]
-
-    steps_from_top = max_levels - level
-    if steps_from_top < len(_ITER_STEPS):
-        return _ITER_STEPS[steps_from_top]
-    return _ITER_STEPS[-1]
+    res = round(32.0 * (2 ** 0.5) ** level)
+    return min(res, 800)
 
 
 def _load_dataset_for_level(cfg: Config, level: int) -> NerfSyntheticDataset:
     """Load dataset at appropriate resolution for this level."""
-    scale = _get_level_scale(level, cfg.max_levels)
+    res = _get_level_resolution(level)
+    scale = res / 800.0
     dataset = NerfSyntheticDataset(cfg.data_dir, split="train", scale=scale)
     return dataset
 
 
 def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, GaussianTree]:
     """Run full training pipeline."""
+    # Seed all RNGs for reproducibility
+    import numpy as np
+    random.seed(cfg.seed)
+    np.random.seed(cfg.seed)
+    torch.manual_seed(cfg.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(cfg.seed)
+
     if torch.cuda.is_available():
         device = torch.device("cuda")
     elif torch.backends.mps.is_available():
         device = torch.device("mps")
     else:
         device = torch.device("cpu")
-    logger.info(f"Using device: {device}")
+    logger.info(f"Using device: {device} (seed={cfg.seed})")
 
     sh_degree = cfg.sh_degree
     background = torch.tensor(cfg.background_color, device=device)
@@ -226,11 +222,11 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, Gaussi
     # Phase 1: Root fitting
     # ========================
     if start_phase <= 1:
-        root_scale = _get_level_scale(0, cfg.max_levels)
+        root_res = _get_level_resolution(0)
         dataset_root = _load_dataset_for_level(cfg, 0)
         logger.info(
             f"Phase 1: Fitting {cfg.num_roots} root Gaussians "
-            f"(resolution scale={root_scale:.3f})"
+            f"(resolution={root_res}px)"
         )
         roots = init_roots(cfg.num_roots, sh_degree=sh_degree, device=device)
 
@@ -245,14 +241,18 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, Gaussi
 
         for step in range(cfg.root_iterations):
             idx = random.randint(0, len(dataset_root) - 1)
-            gt_image, camera = dataset_root[idx]
-            gt_image = gt_image.to(device)
+            gt_rgb, gt_alpha, camera = dataset_root[idx]
+            gt_rgb = gt_rgb.to(device)
+            gt_alpha = gt_alpha.to(device)
             camera = {k: v.to(device) if isinstance(v, torch.Tensor) else v
                       for k, v in camera.items()}
 
+            rand_bg = torch.rand(3, device=device)
+            gt_image = gt_rgb * gt_alpha + (1.0 - gt_alpha) * rand_bg.view(1, 1, 3)
+
             loss = train_roots_step(
                 roots, gt_image, camera, optimizer,
-                ssim_weight=cfg.ssim_weight, background=background,
+                ssim_weight=cfg.ssim_weight, background=rand_bg,
             )
 
             # Normalize quaternions after optimizer step
@@ -300,65 +300,102 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, Gaussi
 
         # --- Adaptive splitting: use gradient signal from previous level ---
         split_mask = None
+        exclude_mask = None
         prev_level = tree.levels[current_level - 1]
         if current_level > 1 and prev_level.grad_count.sum() > 0:
-            scores = prev_level.split_score()
-            split_mask = scores > cfg.split_grad_threshold
-            n_split = split_mask.sum().item()
+            max_grad, mean_grad = prev_level.split_scores()
+            parent_opacity = torch.sigmoid(prev_level.opacities).squeeze(-1)
+
+            # Gradient OR: split if any view needs detail OR consistent coverage gap
+            split_mask = (max_grad > cfg.split_max_threshold) | (mean_grad > cfg.split_mean_threshold)
+            # Opacity: exclude near-transparent parents entirely (no children)
+            exclude_mask = parent_opacity < cfg.split_min_opacity
+
             n_total = split_mask.shape[0]
+            n_split = (split_mask & ~exclude_mask).sum().item()
+            n_keep = (~split_mask & ~exclude_mask).sum().item()
+            n_exclude = exclude_mask.sum().item()
+
+            # Gradient statistics for threshold calibration
+            alive = ~exclude_mask
             logger.info(
-                f"Adaptive split: {n_split}/{n_total} parents selected "
-                f"(grad threshold={cfg.split_grad_threshold:.4f}, "
-                f"max_grad mean={scores.mean():.4f}, "
-                f"max_grad max={scores.max():.4f})"
+                f"Adaptive split: {n_split} subdivide, {n_keep} keep, "
+                f"{n_exclude} exclude (of {n_total} parents)"
+            )
+            logger.info(
+                f"  Grad stats (alive parents): "
+                f"max_grad: mean={max_grad[alive].mean():.5f}, "
+                f"median={max_grad[alive].median():.5f}, "
+                f"p90={max_grad[alive].quantile(0.9):.5f}, "
+                f"max={max_grad[alive].max():.5f} | "
+                f"mean_grad: mean={mean_grad[alive].mean():.6f}, "
+                f"median={mean_grad[alive].median():.6f}, "
+                f"max={mean_grad[alive].max():.6f}"
             )
 
         # Add new level
         if tree.depth <= current_level:
-            tree.add_level(split_mask=split_mask)
+            tree.add_level(
+                split_mask=split_mask,
+                exclude_mask=exclude_mask,
+                child_opacity_scale=cfg.child_opacity_scale,
+            )
         tree = tree.to(device)
 
         level_module = tree.levels[current_level]
         num_gaussians = level_module.num_gaussians
 
         # Load dataset at appropriate resolution for this level
-        level_scale = _get_level_scale(current_level, cfg.max_levels)
+        level_res = _get_level_resolution(current_level)
         dataset = _load_dataset_for_level(cfg, current_level)
+        num_views = len(dataset)
 
         # Load higher-res dataset for hypothetical children rendering
-        # (one step above current level's resolution)
-        hires_level = min(current_level + 1, cfg.max_levels)
-        dataset_hires = _load_dataset_for_level(cfg, hires_level) if current_level < cfg.max_levels else None
+        dataset_hires = None
+        if current_level < cfg.max_levels:
+            dataset_hires = _load_dataset_for_level(cfg, current_level + 1)
 
-        # Exponential iterations: base * 2^(level-1)
-        level_iters = _get_level_iterations(current_level, cfg.max_levels)
+        # Epoch-based iterations
+        level_iters = cfg.level_epochs * num_views
         logger.info(
             f"Level {current_level}: {num_gaussians} Gaussians, "
-            f"{level_iters} iterations, scale={level_scale:.3f}"
+            f"{level_res}px, {cfg.level_epochs} epochs ({level_iters} steps)"
         )
 
         # Per-parameter optimizer
         optimizer = _make_optimizer(cfg, level_module)
 
         best_loss = float("inf")
-        plateau_count = 0
+        best_loss_epoch = 0
+        epoch_losses = []
+        epoch_loss_accum = 0.0
+        epoch_loss_count = 0
 
         for step in range(level_iters):
             # Decay position LR
             pos_lr = _get_position_lr(cfg, step, level_iters)
             _update_position_lr(optimizer, pos_lr)
 
-            idx = random.randint(0, len(dataset) - 1)
-            gt_image, camera = dataset[idx]
-            gt_image = gt_image.to(device)
+            idx = random.randint(0, num_views - 1)
+            gt_rgb, gt_alpha, camera = dataset[idx]
+            gt_rgb = gt_rgb.to(device)
+            gt_alpha = gt_alpha.to(device)
             camera = {k: v.to(device) if isinstance(v, torch.Tensor) else v
                       for k, v in camera.items()}
 
-            # Higher-res image for hypothetical children (same view index)
+            # Random background forces proper opacity learning:
+            # renderer fills transparent regions with rand_bg, GT composited
+            # with same rand_bg, so the only way to match is correct opacity
+            rand_bg = torch.rand(3, device=device)
+            gt_image = gt_rgb * gt_alpha + (1.0 - gt_alpha) * rand_bg.view(1, 1, 3)
+
+            # Higher-res image for hypothetical children (same view, same background)
             gt_hires, cam_hires = None, None
             if dataset_hires is not None:
-                gt_hires, cam_hires = dataset_hires[idx]
-                gt_hires = gt_hires.to(device)
+                gt_rgb_hr, gt_alpha_hr, cam_hires = dataset_hires[idx]
+                gt_rgb_hr = gt_rgb_hr.to(device)
+                gt_alpha_hr = gt_alpha_hr.to(device)
+                gt_hires = gt_rgb_hr * gt_alpha_hr + (1.0 - gt_alpha_hr) * rand_bg.view(1, 1, 3)
                 cam_hires = {k: v.to(device) if isinstance(v, torch.Tensor) else v
                              for k, v in cam_hires.items()}
 
@@ -367,48 +404,52 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, Gaussi
                 gt_image, gt_hires,
                 camera, cam_hires,
                 optimizer,
-                cfg=cfg, background=background,
+                cfg=cfg, background=rand_bg,
             )
 
             writer.add_scalar(f"phase2/level_{current_level}/loss", loss.item(), step)
 
-            # Opacity reset
-            if (step + 1) % cfg.opacity_reset_interval == 0 and step < level_iters - 100:
-                level_module.reset_opacity(cfg.opacity_reset_value)
-                # Reset optimizer state for opacity
-                for pg in optimizer.param_groups:
-                    if pg.get("name") == "opacities":
-                        for p in pg["params"]:
-                            state = optimizer.state.get(p)
-                            if state:
-                                state["exp_avg"].zero_()
-                                state["exp_avg_sq"].zero_()
-                logger.info(f"Level {current_level} step {step}: opacity reset")
+            epoch_loss_accum += loss.item()
+            epoch_loss_count += 1
 
             if loss.item() < best_loss - 1e-5:
                 best_loss = loss.item()
-                plateau_count = 0
-            else:
-                plateau_count += 1
+                best_loss_epoch = step / num_views
 
-            if plateau_count >= cfg.level_convergence_window:
+            if (step + 1) % num_views == 0:
+                epoch = (step + 1) / num_views
+                avg_loss = epoch_loss_accum / epoch_loss_count
+                epoch_losses.append(avg_loss)
                 logger.info(
-                    f"Level {current_level} converged at step {step}, loss={best_loss:.6f}"
+                    f"Level {current_level} epoch {epoch:.0f}: "
+                    f"loss={avg_loss:.6f}"
                 )
-                break
-
-            if step % 500 == 0:
-                logger.info(f"Level {current_level} step {step}: loss={loss.item():.6f}")
+                epoch_loss_accum = 0.0
+                epoch_loss_count = 0
 
         # Freeze this level
         for param in tree.level_parameters(current_level):
             param.requires_grad_(False)
 
+        convergence_info = {
+            "best_loss": best_loss,
+            "best_loss_epoch": best_loss_epoch,
+            "total_epochs": cfg.level_epochs,
+            "epoch_losses": epoch_losses,
+            "num_gaussians": num_gaussians,
+            "resolution": level_res,
+        }
         save_checkpoint(
             Path(cfg.checkpoint_dir) / f"phase2_level_{current_level}.pt",
             roots, tree, phase=2, level=level_idx + 1,
+            convergence=convergence_info,
         )
-        logger.info(f"Level {current_level} complete. {num_gaussians} Gaussians. Saved.")
+        epochs_since_best = cfg.level_epochs - best_loss_epoch
+        logger.info(
+            f"Level {current_level} complete. {num_gaussians} Gaussians. "
+            f"Best loss={best_loss:.6f} at epoch {best_loss_epoch:.1f} "
+            f"({epochs_since_best:.1f} epochs ago). Saved."
+        )
 
     writer.close()
     return roots, tree

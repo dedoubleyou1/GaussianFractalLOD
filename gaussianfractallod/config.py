@@ -13,10 +13,9 @@ class Config:
     root_iterations: int = 10000
     root_convergence_window: int = 1000
 
-    # Level fitting (Phase 2) — each level has up to 8× more Gaussians
+    # Level fitting (Phase 2)
     max_levels: int = 6
-    level_base_iterations: int = 500  # doubled each level: 500, 1000, 2000, 4000, 8000, 16000
-    level_convergence_window: int = 500
+    level_epochs: int = 30            # passes through all training views per level
 
     # Per-parameter learning rates (matching 3DGS conventions)
     lr_means: float = 1.6e-4       # position — low, with decay
@@ -26,18 +25,21 @@ class Config:
     lr_opacities: float = 2.5e-2    # opacity — high
     lr_sh_coeffs: float = 2.5e-3    # SH DC color
 
-    # Opacity reset
-    opacity_reset_interval: int = 3000  # reset opacity every N steps
-    opacity_reset_value: float = -2.2   # inverse_sigmoid(0.1)
+    # Adaptive splitting (OR logic: split if EITHER gradient threshold exceeded)
+    split_max_threshold: float = 0.003   # any single view needs detail
+    split_mean_threshold: float = 0.0005  # consistent gradient across views (coverage)
+    split_min_opacity: float = 0.01      # don't subdivide near-transparent Gaussians
 
-    # Adaptive splitting
-    split_grad_threshold: float = 0.005  # adjusted for max-gradient scoring
+    # Child opacity: multiply subdivision-derived opacity by this factor.
+    # Forces children to re-earn opacity from a low starting point (like 3DGS reset).
+    child_opacity_scale: float = 0.1
 
     # Regularization
     reg_scale_weight: float = 0.01
     reg_position_weight: float = 0.01
-    reg_aspect_weight: float = 0.01  # reduced — quat+scale has no shear
-    max_aspect_ratio: float = 100.0  # relaxed — allow thin discs for surfaces
+    reg_aspect_weight: float = 0.001  # exp(spread²) wall beyond dead zone
+    aspect_dead_zone: float = 2.0  # no aspect penalty up to this ratio beyond init
+    max_aspect_ratio: float = 100.0  # hard clamp ceiling
 
     # SH degree
     sh_degree: int = 3
@@ -50,3 +52,6 @@ class Config:
 
     # Rendering
     background_color: list = field(default_factory=lambda: [1.0, 1.0, 1.0])
+
+    # Reproducibility
+    seed: int = 42

@@ -56,16 +56,56 @@ class GaussianLevel(nn.Module):
             self.grad_count += 1
             self.grad_max = torch.max(self.grad_max, grad_norm)
 
-    def split_score(self) -> torch.Tensor:
-        """Score for split decisions. Uses max gradient — if ANY view
-        shows this region needs more detail, split it. This catches
-        under-observed regions that get diluted by mean-based scoring."""
-        return self.grad_max
+    def split_scores(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """Scores for split decisions.
 
-    def reset_opacity(self, value: float = -2.2) -> None:
-        """Reset all opacities to a low value (inverse_sigmoid(0.1) ~ -2.2)."""
+        Returns:
+            (max_grad, mean_grad) — two independent signals:
+            - max_grad: peak gradient from any view (catches under-observed regions)
+            - mean_grad: average gradient across views (catches coverage gaps)
+        """
+        mean_grad = self.grad_accum / self.grad_count.clamp(min=1)
+        return self.grad_max, mean_grad
+
+    def reset_opacity(self, value: float = -2.2, keep_above: float = 0.5) -> None:
+        """Reset low-opacity Gaussians. High-opacity ones keep their values.
+
+        Args:
+            value: Reset target in logit space (default -2.2 = sigmoid(0.1)).
+            keep_above: Gaussians with sigmoid(opacity) >= this are not reset.
+                This preserves well-established opaque surfaces (e.g., floor plates)
+                that have limited viewing angles and struggle to re-learn opacity.
+        """
         with torch.no_grad():
-            self.opacities.fill_(value)
+            current_alpha = torch.sigmoid(self.opacities)
+            reset_mask = current_alpha < keep_above
+            self.opacities[reset_mask] = value
+
+    def prune(self, keep_mask: torch.Tensor) -> None:
+        """Remove Gaussians where keep_mask is False.
+
+        Args:
+            keep_mask: (N,) bool tensor. True = keep, False = remove.
+        """
+        # Parameters — replace with filtered versions
+        self.means = nn.Parameter(self.means.data[keep_mask])
+        self.quats = nn.Parameter(self.quats.data[keep_mask])
+        self.log_scales = nn.Parameter(self.log_scales.data[keep_mask])
+        self.opacities = nn.Parameter(self.opacities.data[keep_mask])
+        self.sh_coeffs = nn.Parameter(self.sh_coeffs.data[keep_mask])
+
+        # Buffers
+        self.register_buffer("init_means", self.init_means[keep_mask])
+        self.register_buffer("init_log_scales", self.init_log_scales[keep_mask])
+        self.register_buffer("grad_accum", self.grad_accum[keep_mask])
+        self.register_buffer("grad_count", self.grad_count[keep_mask])
+        self.register_buffer("grad_max", self.grad_max[keep_mask])
+        if hasattr(self, 'expected_offset') and self.expected_offset is not None:
+            self.register_buffer("expected_offset", self.expected_offset[keep_mask])
+        if hasattr(self, 'parent_indices') and self.parent_indices is not None:
+            self.register_buffer("parent_indices", self.parent_indices[keep_mask])
+        if hasattr(self, 'octant_indices') and self.octant_indices is not None:
+            self.register_buffer("octant_indices", self.octant_indices[keep_mask])
 
 
 class GaussianTree(nn.Module):
@@ -92,33 +132,55 @@ class GaussianTree(nn.Module):
             p.requires_grad_(False)
         self.levels.append(level)
 
-    def add_level(self, split_mask: torch.Tensor | None = None) -> None:
-        """Add a new level by subdividing selected parents.
+    def add_level(
+        self,
+        split_mask: torch.Tensor | None = None,
+        exclude_mask: torch.Tensor | None = None,
+        child_opacity_scale: float = 1.0,
+    ) -> None:
+        """Add a new level by subdividing, keeping, or excluding parents.
+
+        Each parent has one of three outcomes:
+          - split_mask=True  → subdivide into 8 children (more detail)
+          - split_mask=False → carry forward as 1 copy (adequate as-is)
+          - exclude_mask=True → no representation at next level (empty space)
 
         Args:
-            split_mask: (N,) bool tensor. If provided, only parents where
-                mask is True are subdivided into 8 children. Parents where
-                mask is False are carried forward as-is (kept at this level).
-                If None, all parents are subdivided.
+            split_mask: (N,) bool. True = subdivide into 8. False = carry forward.
+                If None, all non-excluded parents are subdivided.
+            exclude_mask: (N,) bool. True = drop entirely (no children).
+                If None, no parents are excluded.
         """
         assert self.depth > 0, "Must set root level first"
 
         parent_level = self.levels[-1]
         parents = parent_level.get_gaussians()
-
         N_parents = parents.num_gaussians
+        device = parents.means.device
 
         with torch.no_grad():
-            if split_mask is None or split_mask.all():
-                # Subdivide all parents
+            # Build per-parent action: 'split', 'keep', or 'exclude'
+            if exclude_mask is None:
+                exclude_mask = torch.zeros(N_parents, dtype=torch.bool, device=device)
+            if split_mask is None:
+                split_mask = ~exclude_mask  # subdivide all non-excluded
+
+            # Ensure excluded parents are not split or kept
+            split_mask = split_mask & ~exclude_mask
+            keep_mask = ~split_mask & ~exclude_mask
+
+            if split_mask.all() and not exclude_mask.any():
+                # Fast path: subdivide all parents
                 children = subdivide_to_8(parents)
                 parent_means_repeated = parents.means.repeat_interleave(8, dim=0)
-                # Parent index: [0,0,0,0,0,0,0,0, 1,1,1,1,1,1,1,1, ...]
-                parent_indices = torch.arange(N_parents, device=parents.means.device).repeat_interleave(8)
+                parent_indices = torch.arange(N_parents, device=device).repeat_interleave(8)
+                # Octant index encodes subdivision position:
+                #   0=(+x,+y,+z) 1=(+x,+y,-z) 2=(+x,-y,+z) 3=(+x,-y,-z)
+                #   4=(-x,+y,+z) 5=(-x,+y,-z) 6=(-x,-y,+z) 7=(-x,-y,-z)
+                octant_indices = torch.arange(8, device=device).repeat(N_parents)
             else:
-                # Split only selected parents, keep the rest as-is
                 split_indices = torch.where(split_mask)[0]
-                keep_indices = torch.where(~split_mask)[0]
+                keep_indices = torch.where(keep_mask)[0]
 
                 split_parents = Gaussian(
                     means=parents.means[split_mask],
@@ -128,11 +190,11 @@ class GaussianTree(nn.Module):
                     sh_coeffs=parents.sh_coeffs[split_mask],
                 )
                 keep_parents = Gaussian(
-                    means=parents.means[~split_mask],
-                    quats=parents.quats[~split_mask],
-                    log_scales=parents.log_scales[~split_mask],
-                    opacities=parents.opacities[~split_mask],
-                    sh_coeffs=parents.sh_coeffs[~split_mask],
+                    means=parents.means[keep_mask],
+                    quats=parents.quats[keep_mask],
+                    log_scales=parents.log_scales[keep_mask],
+                    opacities=parents.opacities[keep_mask],
+                    sh_coeffs=parents.sh_coeffs[keep_mask],
                 )
 
                 if split_parents.num_gaussians > 0:
@@ -141,7 +203,7 @@ class GaussianTree(nn.Module):
                 else:
                     split_children = None
 
-                # Combine: kept parents + new children
+                # Combine: kept parents + new children (excluded parents omitted)
                 parts_means = []
                 parts_quats = []
                 parts_log_scales = []
@@ -149,6 +211,7 @@ class GaussianTree(nn.Module):
                 parts_sh = []
                 parts_parent_means = []
                 parts_parent_idx = []
+                parts_octant_idx = []
 
                 if keep_parents.num_gaussians > 0:
                     parts_means.append(keep_parents.means)
@@ -158,8 +221,13 @@ class GaussianTree(nn.Module):
                     parts_sh.append(keep_parents.sh_coeffs)
                     parts_parent_means.append(keep_parents.means)
                     parts_parent_idx.append(keep_indices)
+                    # Kept parents are not subdivided — octant = -1
+                    parts_octant_idx.append(torch.full(
+                        (keep_parents.num_gaussians,), -1,
+                        dtype=torch.long, device=device))
 
                 if split_children is not None:
+                    n_split = split_parents.num_gaussians
                     parts_means.append(split_children.means)
                     parts_quats.append(split_children.quats)
                     parts_log_scales.append(split_children.log_scales)
@@ -167,6 +235,8 @@ class GaussianTree(nn.Module):
                     parts_sh.append(split_children.sh_coeffs)
                     parts_parent_means.append(split_parent_means)
                     parts_parent_idx.append(split_indices.repeat_interleave(8))
+                    parts_octant_idx.append(
+                        torch.arange(8, device=device).repeat(n_split))
 
                 children = Gaussian(
                     means=torch.cat(parts_means, dim=0),
@@ -177,9 +247,23 @@ class GaussianTree(nn.Module):
                 )
                 parent_means_repeated = torch.cat(parts_parent_means, dim=0)
                 parent_indices = torch.cat(parts_parent_idx, dim=0)
+                octant_indices = torch.cat(parts_octant_idx, dim=0)
 
             expected_offset = (children.means - parent_means_repeated).norm(dim=-1)
             expected_offset = expected_offset.clamp(min=1e-4)
+
+            # Scale down child opacities to force re-earning visibility.
+            # Operates in sigmoid space: alpha_new = alpha_old * scale, then back to logit.
+            if child_opacity_scale < 1.0:
+                alpha = torch.sigmoid(children.opacities)
+                alpha_scaled = (alpha * child_opacity_scale).clamp(min=1e-6, max=1.0 - 1e-6)
+                children = Gaussian(
+                    means=children.means,
+                    quats=children.quats,
+                    log_scales=children.log_scales,
+                    opacities=torch.log(alpha_scaled / (1.0 - alpha_scaled)),
+                    sh_coeffs=children.sh_coeffs,
+                )
 
         new_level = GaussianLevel(
             means=children.means.detach().clone(),
@@ -190,6 +274,7 @@ class GaussianTree(nn.Module):
         )
         new_level.register_buffer("expected_offset", expected_offset.detach().clone())
         new_level.register_buffer("parent_indices", parent_indices.detach().clone())
+        new_level.register_buffer("octant_indices", octant_indices.detach().clone())
         self.levels.append(new_level)
 
     def get_level_gaussians(self, level: int) -> Gaussian:

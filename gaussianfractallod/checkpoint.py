@@ -72,6 +72,8 @@ def load_checkpoint(
                 level.register_buffer("expected_offset", torch.zeros(n))
             if not hasattr(level, 'parent_indices'):
                 level.register_buffer("parent_indices", torch.zeros(n, dtype=torch.long))
+            if not hasattr(level, 'octant_indices'):
+                level.register_buffer("octant_indices", torch.zeros(n, dtype=torch.long))
             if i == 0:
                 for p in level.parameters():
                     p.requires_grad_(False)

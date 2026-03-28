@@ -106,8 +106,14 @@ def _binary_cut_along_axis(gaussians: Gaussian, axis: int) -> Gaussian:
     child_quats = gaussians.quats  # (N, 4)
 
     # Color: parent's color + small random perturbation to break symmetry
-    sh_right = gaussians.sh_coeffs + torch.randn_like(gaussians.sh_coeffs) * 0.01
-    sh_left = gaussians.sh_coeffs + torch.randn_like(gaussians.sh_coeffs) * 0.01
+    # Use a separate CPU generator so subdivision doesn't desync the main RNG
+    # (different runs split different Gaussians, consuming different amounts)
+    _subdiv_gen = torch.Generator()  # CPU generator
+    _subdiv_gen.manual_seed(N * 31 + axis * 7)  # deterministic from input shape
+    noise_right = torch.randn(gaussians.sh_coeffs.shape, generator=_subdiv_gen, device='cpu').to(device)
+    noise_left = torch.randn(gaussians.sh_coeffs.shape, generator=_subdiv_gen, device='cpu').to(device)
+    sh_right = gaussians.sh_coeffs + noise_right * 0.01
+    sh_left = gaussians.sh_coeffs + noise_left * 0.01
 
     # Interleave: [right_0, left_0, right_1, left_1, ...]
     means = torch.stack([mu_right, mu_left], dim=1).reshape(2 * N, 3)

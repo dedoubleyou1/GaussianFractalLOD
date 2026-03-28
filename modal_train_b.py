@@ -29,7 +29,7 @@ image = (
     .add_local_dir("nerf_synthetic/lego", remote_path="/app/nerf_synthetic/lego", copy=True)
 )
 
-app = modal.App("gaussianfractallod", image=image)
+app = modal.App("gaussianfractallod-b", image=image)
 
 # Persistent volumes
 vol = modal.Volume.from_name("gflod-checkpoints", create_if_missing=True)
@@ -97,7 +97,7 @@ def train(
         print("\n--- Auto-evaluating ---")
         from gaussianfractallod.data import NerfSyntheticDataset
         from gaussianfractallod.eval import evaluate as do_eval
-        from gaussianfractallod.checkpoint import save_checkpoint as save_ckpt
+        from gaussianfractallod.checkpoint import load_checkpoint
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         background = torch.tensor([1.0, 1.0, 1.0], device=device)
@@ -108,17 +108,6 @@ def train(
             r = do_eval(tree.to(device), test_dataset, depth, device, background)
             eval_results[depth] = r
             print(f"Depth {depth}: PSNR={r['psnr']:.2f}, {r['num_gaussians']} Gaussians")
-
-        # Save eval results alongside final checkpoint
-        from pathlib import Path
-        save_ckpt(
-            Path(checkpoint_dir) / "eval_results.pt",
-            roots, tree, phase=2, level=cfg.max_levels,
-            eval=eval_results,
-            config_overrides=overrides,
-        )
-        vol.commit()
-        print("Eval results saved to checkpoint.")
 
     return {"depth": tree.depth, "checkpoint_dir": checkpoint_dir, "eval": eval_results}
 
@@ -341,87 +330,6 @@ def export_plys(
     return results
 
 
-@app.function(
-    gpu="L4",
-    timeout=600,
-    volumes={"/checkpoints": vol},
-)
-def render_lod_gif(
-    scene: str = "lego",
-    sh_degree: int = 0,
-    max_levels: int = 9,
-    run_name: str | None = None,
-    test_index: int = 60,
-    frame_duration_ms: int = 1000,
-    output_size: int = 1024,
-) -> bytes:
-    """Render each LOD level from a single test camera and return an APNG."""
-    vol.reload()
-    import torch
-    import glob
-    import io
-    from PIL import Image, ImageDraw, ImageFont
-
-    from gaussianfractallod.checkpoint import load_checkpoint
-    from gaussianfractallod.data import NerfSyntheticDataset
-    from gaussianfractallod.render import render_gaussians
-
-    suffix = run_name or f"sh{sh_degree}_l{max_levels}"
-    checkpoint_dir = f"/checkpoints/{scene}_{suffix}"
-    ckpts = sorted(glob.glob(f"{checkpoint_dir}/phase2_level_*.pt"),
-                   key=lambda p: int(p.split("_level_")[1].split(".")[0]))
-    if not ckpts:
-        print(f"No checkpoints found in {checkpoint_dir}")
-        return b""
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    roots, tree, meta = load_checkpoint(ckpts[-1], device=device)
-
-    dataset = NerfSyntheticDataset(f"/app/nerf_synthetic/{scene}", split="test")
-    gt_rgb, gt_alpha, camera = dataset[test_index]
-    cam = {k: v.to(device) if isinstance(v, torch.Tensor) else v
-           for k, v in camera.items()}
-    background = torch.ones(3, device=device)
-
-    # Try to load a larger font
-    font = None
-    for font_path in ["/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-                      "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"]:
-        try:
-            font = ImageFont.truetype(font_path, 36)
-            break
-        except (OSError, IOError):
-            continue
-
-    frames = []
-
-    # Each LOD level (no ground truth)
-    with torch.no_grad():
-        for depth in range(tree.depth):
-            gaussians = tree.get_gaussians_at_depth(depth)
-            rendered = render_gaussians(
-                gaussians, cam["viewmat"], cam["K"],
-                cam["width"], cam["height"], background,
-            )
-            img_np = (rendered.cpu().numpy() * 255).clip(0, 255).astype("uint8")
-            pil_img = Image.fromarray(img_np)
-            if pil_img.size != (output_size, output_size):
-                pil_img = pil_img.resize((output_size, output_size), Image.LANCZOS)
-            draw = ImageDraw.Draw(pil_img)
-            label = f"L{depth}: {gaussians.num_gaussians:,} G"
-            draw.text((20, 20), label, fill=(255, 0, 0), font=font)
-            frames.append(pil_img)
-            print(f"Rendered level {depth}: {gaussians.num_gaussians} Gaussians")
-
-    buf = io.BytesIO()
-    frames[0].save(
-        buf, format="PNG", save_all=True, append_images=frames[1:],
-        duration=frame_duration_ms, loop=0,
-    )
-    print(f"APNG: {len(frames)} frames, {buf.tell() / 1024:.0f} KB")
-    return buf.getvalue()
-
-
 @app.local_entrypoint()
 def main(
     scene: str = "lego",
@@ -431,27 +339,9 @@ def main(
     eval_only: bool = False,
     export: bool = False,
     analyze: bool = False,
-    gif: bool = False,
-    test_index: int = 60,
     resume: str | None = None,
     run_name: str | None = None,
 ):
-    if gif:
-        print(f"Rendering LOD GIF (test view {test_index})...")
-        gif_bytes = render_lod_gif.remote(
-            scene=scene, sh_degree=sh_degree, max_levels=max_levels,
-            run_name=run_name, test_index=test_index,
-        )
-        import os
-        suffix = run_name or f"sh{sh_degree}_l{max_levels}"
-        out_dir = f"exports/{scene}_{suffix}"
-        os.makedirs(out_dir, exist_ok=True)
-        out_path = f"{out_dir}/lod_r_{test_index}.png"
-        with open(out_path, "wb") as f:
-            f.write(gif_bytes)
-        print(f"Saved {out_path} ({len(gif_bytes)/1024:.0f} KB)")
-        return
-
     if analyze:
         print("Analyzing residuals...")
         analyze_residuals.remote(scene=scene, sh_degree=sh_degree, max_levels=max_levels, run_name=run_name)

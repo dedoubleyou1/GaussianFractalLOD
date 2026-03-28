@@ -48,8 +48,8 @@ def evaluate(
         logger.info(f"Rendering {gaussians.num_gaussians} Gaussians at depth {target_depth}")
 
         for i in range(len(dataset)):
-            gt_image, camera = dataset[i]
-            gt_image = gt_image.to(device)
+            gt_rgb, gt_alpha, camera = dataset[i]
+            gt_image = (gt_rgb * gt_alpha + (1.0 - gt_alpha)).to(device)  # white bg
             camera = {k: v.to(device) if isinstance(v, torch.Tensor) else v
                       for k, v in camera.items()}
 

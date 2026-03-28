@@ -27,6 +27,7 @@ class NerfSyntheticDataset(Dataset):
         self.frames = meta["frames"]
 
         self.images = []
+        self.alphas = []
         self.cameras = []
         for frame in self.frames:
             img_path = self.root / f"{frame['file_path']}.png"
@@ -44,11 +45,13 @@ class NerfSyntheticDataset(Dataset):
 
             if img_np.shape[2] == 4:
                 alpha = img_np[:, :, 3:4]
-                rgb = img_np[:, :, :3] * alpha + (1.0 - alpha)
+                rgb = img_np[:, :, :3]
             else:
                 rgb = img_np[:, :, :3]
+                alpha = np.ones_like(rgb[:, :, :1])
 
             self.images.append(torch.from_numpy(rgb))
+            self.alphas.append(torch.from_numpy(alpha))
 
             c2w = torch.tensor(frame["transform_matrix"], dtype=torch.float32)
             w2c = torch.linalg.inv(c2w)
@@ -78,4 +81,4 @@ class NerfSyntheticDataset(Dataset):
         return len(self.images)
 
     def __getitem__(self, idx):
-        return self.images[idx], self.cameras[idx]
+        return self.images[idx], self.alphas[idx], self.cameras[idx]

@@ -303,7 +303,7 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, Gaussi
         exclude_mask = None
         prev_level = tree.levels[current_level - 1]
         if current_level > 1 and prev_level.grad_count.sum() > 0:
-            max_grad, mean_grad = prev_level.split_scores()
+            max_grad, mean_grad = prev_level.split_scores(aspect_split_boost=cfg.aspect_split_boost)
             parent_opacity = torch.sigmoid(prev_level.opacities).squeeze(-1)
 
             # Gradient OR: split if any view needs detail OR consistent coverage gap

@@ -45,8 +45,10 @@ def rotate_by_quat(quats: torch.Tensor, vectors: torch.Tensor) -> torch.Tensor:
 def subdivide_to_8(parents: Gaussian) -> Gaussian:
     """Subdivide each parent Gaussian into 8 children.
 
-    Applies 3 sequential binary cuts along the parent's local X, Y, Z axes.
-    Each cut uses alpha-compositing-aware formulas for child size and opacity.
+    Applies 3 sequential binary cuts along axes sorted by scale (longest first).
+    For isotropic Gaussians this degrades to the standard octree (X, Y, Z).
+    For elongated Gaussians, the longest axis is split first, naturally
+    correcting aspect ratio: e.g. 10:1 → 5:1 → 2.5:1 → 1.25:1.
 
     Args:
         parents: N parent Gaussians.
@@ -55,15 +57,20 @@ def subdivide_to_8(parents: Gaussian) -> Gaussian:
         8N child Gaussians.
     """
     current = parents
-
-    for axis in range(3):
-        current = _binary_cut_along_axis(current, axis)
+    for cut in range(3):
+        # Pick the longest axis from current scales (re-evaluated each cut)
+        axes = current.log_scales.argmax(dim=-1)
+        current = _binary_cut_along_axis(current, axes)
 
     return current
 
 
-def _binary_cut_along_axis(gaussians: Gaussian, axis: int) -> Gaussian:
+def _binary_cut_along_axis(gaussians: Gaussian, axes) -> Gaussian:
     """Split each Gaussian into 2 along a local axis.
+
+    Args:
+        gaussians: N Gaussians to split.
+        axes: int (same axis for all) or (N,) tensor of per-Gaussian axis indices.
 
     Uses least-squares optimal formulas for alpha compositing:
     - sigma_c accounts for alpha compositing nonlinearity
@@ -73,9 +80,16 @@ def _binary_cut_along_axis(gaussians: Gaussian, axis: int) -> Gaussian:
     device = gaussians.means.device
     f = SPREAD_FACTOR
 
-    # Displacement: rotate axis_vector * scale * f/2 into world space
-    axis_vector = torch.zeros(N, 3, device=device)
-    axis_vector[:, axis] = 1.0
+    # Handle both scalar and per-Gaussian axes
+    if isinstance(axes, int):
+        axis_vector = torch.zeros(N, 3, device=device)
+        axis_vector[:, axes] = 1.0
+        axis_idx = axes
+    else:
+        # Per-Gaussian axis: build one-hot from index tensor
+        axis_vector = torch.zeros(N, 3, device=device)
+        axis_vector.scatter_(1, axes.unsqueeze(1), 1.0)
+        axis_idx = None  # signal that we use per-Gaussian indexing
 
     scales = gaussians.scales()  # (N, 3)
     local_offset = axis_vector * scales * (f / 2.0)  # (N, 3)
@@ -85,21 +99,23 @@ def _binary_cut_along_axis(gaussians: Gaussian, axis: int) -> Gaussian:
     mu_left = gaussians.means - displacement_world
 
     # Child opacity: alpha_c = [1 - sqrt(1 - alpha_p)] * (0.932 + 0.114*f)
-    # This matches center opacity under alpha compositing
     alpha_p = torch.sigmoid(gaussians.opacities)  # (N, 1)
     alpha_c = (1.0 - torch.sqrt((1.0 - alpha_p).clamp(min=1e-8))) * (0.932 + 0.114 * f)
     alpha_c = alpha_c.clamp(min=1e-6, max=1.0 - 1e-6)
     child_logit = torch.log(alpha_c / (1.0 - alpha_c))
 
     # Child scale: sigma_c = sigma_p * sqrt(1 - f^2/4) * (1 - 0.124*alpha_p^2)
-    # In log-scale terms: add log(scale_factor) on the cut axis
     scale_base = math.sqrt(max(1.0 - f * f / 4.0, 0.01))
     alpha_correction = (1.0 - 0.124 * alpha_p ** 2)  # (N, 1)
     scale_factor = scale_base * alpha_correction  # (N, 1)
 
-    # Child log_scales: inherit parent, adjust cut axis
+    # Child log_scales: inherit parent, adjust cut axis only
     log_scale_adjust = torch.zeros(N, 3, device=device)
-    log_scale_adjust[:, axis:axis+1] = torch.log(scale_factor)  # broadcast (N, 1)
+    if axis_idx is not None:
+        log_scale_adjust[:, axis_idx:axis_idx+1] = torch.log(scale_factor)
+    else:
+        # Per-Gaussian: scatter the scale adjustment to each Gaussian's cut axis
+        log_scale_adjust.scatter_(1, axes.unsqueeze(1), torch.log(scale_factor).expand(N, 1))
     child_log_scales = gaussians.log_scales + log_scale_adjust
 
     # Child quats: inherit parent quaternion (same orientation)
@@ -109,7 +125,8 @@ def _binary_cut_along_axis(gaussians: Gaussian, axis: int) -> Gaussian:
     # Use a separate CPU generator so subdivision doesn't desync the main RNG
     # (different runs split different Gaussians, consuming different amounts)
     _subdiv_gen = torch.Generator()  # CPU generator
-    _subdiv_gen.manual_seed(N * 31 + axis * 7)  # deterministic from input shape
+    # Use a hash that doesn't depend on axis identity (per-Gaussian axes vary)
+    _subdiv_gen.manual_seed(N * 31 + 7)  # deterministic from input shape
     noise_right = torch.randn(gaussians.sh_coeffs.shape, generator=_subdiv_gen, device='cpu').to(device)
     noise_left = torch.randn(gaussians.sh_coeffs.shape, generator=_subdiv_gen, device='cpu').to(device)
     sh_right = gaussians.sh_coeffs + noise_right * 0.01

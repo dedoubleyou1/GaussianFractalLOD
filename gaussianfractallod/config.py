@@ -29,7 +29,6 @@ class Config:
     split_max_threshold: float = 0.003   # any single view needs detail
     split_mean_threshold: float = 0.0005  # consistent gradient across views (coverage)
     split_min_opacity: float = 0.01      # don't subdivide near-transparent Gaussians
-    aspect_split_boost: float = 0.0       # aspect ratio split boost rate (0=off, 0.25=gentle)
 
     # Child opacity: multiply subdivision-derived opacity by this factor.
     # Forces children to re-earn opacity from a low starting point (like 3DGS reset).

@@ -108,7 +108,27 @@ def load_checkpoint(
         for _ in range(state["tree_depth"] - 1):
             tree.add_level()
 
-    tree.load_state_dict(state["tree"], strict=False)
+    # Remap legacy sh_coeffs → sh_dc + sh_rest in state dict
+    tree_state = state["tree"]
+    remapped = {}
+    for key, val in tree_state.items():
+        if ".sh_coeffs" in key and "sh_coeffs_packed" not in key:
+            prefix = key.replace(".sh_coeffs", "")
+            N = val.shape[0]
+            D = val.shape[-1]
+            if val.dim() == 2:
+                # Legacy flat format (N, D) → split into (N, 1, 3) + (N, K-1, 3)
+                remapped[prefix + ".sh_dc"] = val[:, :3].reshape(N, 1, 3)
+                if D > 3:
+                    remapped[prefix + ".sh_rest"] = val[:, 3:].reshape(N, -1, 3)
+                else:
+                    remapped[prefix + ".sh_rest"] = torch.zeros(N, 0, 3)
+            else:
+                remapped[key] = val
+        else:
+            remapped[key] = val
+
+    tree.load_state_dict(remapped, strict=False)
 
     if device is not None:
         roots = roots.to(device)

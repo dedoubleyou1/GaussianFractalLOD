@@ -67,14 +67,15 @@ def train(
     checkpoint_dir = f"/checkpoints/{scene}_{suffix}"
 
     overrides = config_overrides or {}
-    cfg = Config(
+    base_args = dict(
         data_dir=data_dir,
         num_roots=num_roots,
         sh_degree=sh_degree,
         max_levels=max_levels,
         checkpoint_dir=checkpoint_dir,
-        **overrides,
     )
+    base_args.update(overrides)  # overrides win
+    cfg = Config(**base_args)
     if overrides:
         print(f"Config overrides: {overrides}")
 

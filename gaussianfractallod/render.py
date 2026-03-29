@@ -2,7 +2,6 @@
 
 import torch
 import torch.nn.functional as F
-from gsplat import rasterization
 from gaussianfractallod.gaussian import Gaussian
 
 # Try to import gsplat — may not be available on non-CUDA systems

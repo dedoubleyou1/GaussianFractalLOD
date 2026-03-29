@@ -149,7 +149,6 @@ def _train_level_step(
 
     # Aspect ratio: absolute dead-zone + exp wall. No penalty up to dead_zone
     # aspect ratio, then exp(x²) ramps up. Anchored to 1:1, not parent shape.
-    import math
     spread = (gaussians.log_scales.max(dim=-1).values
               - gaussians.log_scales.min(dim=-1).values)
     dead_zone = math.log(cfg.aspect_dead_zone)
@@ -188,7 +187,6 @@ def _train_level_step(
 
     # Hard clamp aspect ratio — trivial with log_scales (no eigendecomposition)
     if cfg.max_aspect_ratio > 0:
-        import math
         max_log_ratio = math.log(cfg.max_aspect_ratio)
         with torch.no_grad():
             ls = level_module.log_scales

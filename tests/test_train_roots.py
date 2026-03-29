@@ -13,7 +13,8 @@ def test_init_roots():
     assert roots.means.shape == (8, 3)
     assert roots.quats.shape == (8, 4)
     assert roots.log_scales.shape == (8, 3)
-    assert roots.sh_coeffs.shape == (8, 3)
+    assert roots.sh_dc.shape == (8, 1, 3)
+    assert roots.sh_rest.shape == (8, 0, 3)
     assert roots.means.requires_grad
 
 
@@ -25,7 +26,7 @@ def test_train_roots_step_reduces_loss():
     roots = init_roots(num_roots=4, sh_degree=0, device=device)
     optimizer = torch.optim.Adam(
         [roots.means, roots.quats, roots.log_scales,
-         roots.opacities, roots.sh_coeffs], lr=1e-2,
+         roots.opacities, roots.sh_dc, roots.sh_rest], lr=1e-2,
     )
     gt_image = torch.zeros(64, 64, 3, device=device)
     gt_image[:, :, 0] = 1.0

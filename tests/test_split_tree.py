@@ -9,7 +9,8 @@ def _make_roots(n=1):
         quats=torch.tensor([[1.0, 0.0, 0.0, 0.0]]).expand(n, 4).contiguous(),
         log_scales=torch.zeros(n, 3),
         opacities=torch.ones(n, 1) * 2.0,
-        sh_coeffs=torch.randn(n, 3),
+        sh_dc=torch.randn(n, 1, 3),
+        sh_rest=torch.zeros(n, 0, 3),
     )
 
 

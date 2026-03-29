@@ -17,7 +17,8 @@ def test_render_produces_image():
         quats=torch.tensor([[1.0, 0.0, 0.0, 0.0]], device=device),
         log_scales=torch.tensor([[-1.0, -1.0, -1.0]], device=device),
         opacities=torch.tensor([[5.0]], device=device),
-        sh_coeffs=torch.tensor([[1.0, 0.0, 0.0]], device=device),
+        sh_dc=torch.tensor([[[1.0, 0.0, 0.0]]], device=device),
+        sh_rest=torch.zeros(1, 0, 3, device=device),
     )
 
     viewmat = torch.eye(4, device=device)

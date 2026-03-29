@@ -15,16 +15,27 @@ def export_ply(gaussians: Gaussian, path: str, sh_degree: int = 0) -> None:
     """
     Path(path).parent.mkdir(parents=True, exist_ok=True)
 
+    N = gaussians.num_gaussians
+    num_sh = (sh_degree + 1) ** 2
+    num_rest = max(0, num_sh - 1) * 3
+
     with torch.no_grad():
         means = gaussians.means.cpu().numpy()
         opacities = gaussians.opacities.cpu().numpy()
-        sh_coeffs = gaussians.sh_coeffs.cpu().numpy()
         quats = F.normalize(gaussians.quats, dim=-1).cpu().numpy()
         log_scales = gaussians.log_scales.cpu().numpy()
 
-    N = means.shape[0]
-    num_sh = (sh_degree + 1) ** 2
-    num_rest = max(0, num_sh - 1) * 3
+        # SH coefficients: internal layout is (N, num_sh*3) coefficient-major
+        # [SH0_R, SH0_G, SH0_B, SH1_R, SH1_G, SH1_B, ...]
+        # PLY format expects channel-major for f_rest:
+        # [SH1_R, SH2_R, ..., SH15_R, SH1_G, ..., SH15_G, SH1_B, ..., SH15_B]
+        raw_sh = gaussians.sh_coeffs.cpu().numpy()
+        sh_dc = raw_sh[:, :3]
+        if num_sh > 1:
+            sh_rest_interleaved = raw_sh[:, 3:].reshape(N, num_sh - 1, 3)
+            sh_rest_channelmajor = np.transpose(sh_rest_interleaved, (0, 2, 1)).reshape(N, -1)
+        else:
+            sh_rest_channelmajor = None
 
     header = "ply\n"
     header += "format binary_little_endian 1.0\n"
@@ -44,12 +55,9 @@ def export_ply(gaussians: Gaussian, path: str, sh_degree: int = 0) -> None:
         for i in range(N):
             f.write(struct.pack("<fff", *means[i]))
             f.write(struct.pack("<fff", 0.0, 0.0, 0.0))
-            f.write(struct.pack("<fff", *sh_coeffs[i, :3]))
+            f.write(struct.pack("<fff", *sh_dc[i]))
             if num_rest > 0:
-                rest = sh_coeffs[i, 3:3 + num_rest]
-                if len(rest) < num_rest:
-                    rest = np.concatenate([rest, np.zeros(num_rest - len(rest))])
-                f.write(struct.pack(f"<{num_rest}f", *rest))
+                f.write(struct.pack(f"<{num_rest}f", *sh_rest_channelmajor[i]))
             f.write(struct.pack("<f", opacities[i, 0]))
             f.write(struct.pack("<fff", *log_scales[i]))
             f.write(struct.pack("<ffff", *quats[i]))

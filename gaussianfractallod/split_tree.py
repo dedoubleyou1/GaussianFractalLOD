@@ -5,12 +5,17 @@ Level L: children of selected parents from level L-1 (adaptive splitting)
 
 Each level is independently renderable for LoD.
 Children are initialized from parent subdivision but train freely.
+
+Split encoding:
+  Parent stores split_cuts: -1=excluded, 0=kept, 1/2/3=number of binary cuts
+  Child stores child_index: position within the split (0..2^cuts-1)
+  Child stores parent_indices: index of parent in previous level
 """
 
 import torch
 import torch.nn as nn
 from gaussianfractallod.gaussian import Gaussian
-from gaussianfractallod.subdivide import subdivide_to_8
+from gaussianfractallod.subdivide import subdivide_variable, subdivide
 
 
 class GaussianLevel(nn.Module):
@@ -63,14 +68,14 @@ class GaussianLevel(nn.Module):
 
         Returns:
             (max_grad, mean_grad) — two independent signals:
-            - max_grad: peak gradient from any view (catches under-observed regions)
-            - mean_grad: average gradient across views (catches coverage gaps)
+            - max_grad: peak gradient from any view
+            - mean_grad: average gradient across views
         """
         mean_grad = self.grad_accum / self.grad_count.clamp(min=1)
         return self.grad_max, mean_grad
 
     def reset_opacity(self, value: float = -2.2, keep_above: float = 0.5) -> None:
-        """Reset low-opacity Gaussians. High-opacity ones keep their values."""
+        """Reset low-opacity Gaussians."""
         with torch.no_grad():
             current_alpha = torch.sigmoid(self.opacities)
             reset_mask = current_alpha < keep_above
@@ -94,8 +99,8 @@ class GaussianLevel(nn.Module):
             self.register_buffer("expected_offset", self.expected_offset[keep_mask])
         if hasattr(self, 'parent_indices') and self.parent_indices is not None:
             self.register_buffer("parent_indices", self.parent_indices[keep_mask])
-        if hasattr(self, 'octant_indices') and self.octant_indices is not None:
-            self.register_buffer("octant_indices", self.octant_indices[keep_mask])
+        if hasattr(self, 'child_index') and self.child_index is not None:
+            self.register_buffer("child_index", self.child_index[keep_mask])
 
 
 class GaussianTree(nn.Module):
@@ -125,11 +130,17 @@ class GaussianTree(nn.Module):
 
     def add_level(
         self,
-        split_mask: torch.Tensor | None = None,
-        exclude_mask: torch.Tensor | None = None,
+        cuts_per_parent: torch.Tensor | None = None,
         child_opacity_scale: float = 1.0,
     ) -> None:
-        """Add a new level by subdividing, keeping, or excluding parents."""
+        """Add a new level with variable fan-out per parent.
+
+        Args:
+            cuts_per_parent: (N,) int tensor per parent.
+                -1 = excluded, 0 = kept, 1 = 2 children, 2 = 4, 3 = 8.
+                If None, all parents get 3 cuts (full octree).
+            child_opacity_scale: scale factor for child opacities.
+        """
         assert self.depth > 0, "Must set root level first"
 
         parent_level = self.levels[-1]
@@ -138,22 +149,46 @@ class GaussianTree(nn.Module):
         device = parents.means.device
 
         with torch.no_grad():
-            if exclude_mask is None:
-                exclude_mask = torch.zeros(N_parents, dtype=torch.bool, device=device)
-            if split_mask is None:
-                split_mask = ~exclude_mask
+            if cuts_per_parent is None:
+                cuts_per_parent = torch.full((N_parents,), 3, dtype=torch.long, device=device)
 
-            split_mask = split_mask & ~exclude_mask
-            keep_mask = ~split_mask & ~exclude_mask
+            # Store split decisions on parent level
+            parent_level.register_buffer("split_cuts", cuts_per_parent.detach().clone())
 
-            if split_mask.all() and not exclude_mask.any():
-                children = subdivide_to_8(parents)
-                parent_means_repeated = parents.means.repeat_interleave(8, dim=0)
-                parent_indices = torch.arange(N_parents, device=device).repeat_interleave(8)
-                octant_indices = torch.arange(8, device=device).repeat(N_parents)
-            else:
-                split_indices = torch.where(split_mask)[0]
+            keep_mask = cuts_per_parent == 0
+            split_mask = cuts_per_parent > 0
+            # exclude_mask = cuts_per_parent < 0 (implicit — not kept or split)
+
+            n_keep = keep_mask.sum().item()
+            n_split = split_mask.sum().item()
+
+            parts_means = []
+            parts_quats = []
+            parts_log_scales = []
+            parts_op = []
+            parts_sh_dc = []
+            parts_sh_rest = []
+            parts_parent_means = []
+            parts_parent_idx = []
+            parts_child_idx = []
+
+            # Kept parents
+            if n_keep > 0:
                 keep_indices = torch.where(keep_mask)[0]
+                parts_means.append(parents.means[keep_mask])
+                parts_quats.append(parents.quats[keep_mask])
+                parts_log_scales.append(parents.log_scales[keep_mask])
+                parts_op.append(parents.opacities[keep_mask])
+                parts_sh_dc.append(parents.sh_dc[keep_mask])
+                parts_sh_rest.append(parents.sh_rest[keep_mask])
+                parts_parent_means.append(parents.means[keep_mask])
+                parts_parent_idx.append(keep_indices)
+                parts_child_idx.append(torch.zeros(n_keep, dtype=torch.long, device=device))
+
+            # Split parents (variable cuts)
+            if n_split > 0:
+                split_indices = torch.where(split_mask)[0]
+                split_cuts = cuts_per_parent[split_mask]
 
                 split_parents = Gaussian(
                     means=parents.means[split_mask],
@@ -163,68 +198,58 @@ class GaussianTree(nn.Module):
                     sh_dc=parents.sh_dc[split_mask],
                     sh_rest=parents.sh_rest[split_mask],
                 )
-                keep_parents = Gaussian(
-                    means=parents.means[keep_mask],
-                    quats=parents.quats[keep_mask],
-                    log_scales=parents.log_scales[keep_mask],
-                    opacities=parents.opacities[keep_mask],
-                    sh_dc=parents.sh_dc[keep_mask],
-                    sh_rest=parents.sh_rest[keep_mask],
-                )
 
-                if split_parents.num_gaussians > 0:
-                    split_children = subdivide_to_8(split_parents)
-                    split_parent_means = split_parents.means.repeat_interleave(8, dim=0)
-                else:
-                    split_children = None
+                split_children, child_idx = subdivide_variable(split_parents, split_cuts)
 
-                parts_means = []
-                parts_quats = []
-                parts_log_scales = []
-                parts_op = []
-                parts_sh_dc = []
-                parts_sh_rest = []
-                parts_parent_means = []
-                parts_parent_idx = []
-                parts_octant_idx = []
+                # Build parent_indices: map each child back to the original parent index
+                # subdivide_variable processes tiers in order (1-cut, 2-cut, 3-cut)
+                # We need to track which original parent each tier-child came from
+                tier_parent_idx = []
+                for n_cuts in [1, 2, 3]:
+                    tier_mask = split_cuts == n_cuts
+                    if not tier_mask.any():
+                        continue
+                    # Original indices of parents in this tier
+                    tier_orig_idx = split_indices[tier_mask]
+                    n_children_per = 2 ** n_cuts
+                    tier_parent_idx.append(tier_orig_idx.repeat_interleave(n_children_per))
 
-                if keep_parents.num_gaussians > 0:
-                    parts_means.append(keep_parents.means)
-                    parts_quats.append(keep_parents.quats)
-                    parts_log_scales.append(keep_parents.log_scales)
-                    parts_op.append(keep_parents.opacities)
-                    parts_sh_dc.append(keep_parents.sh_dc)
-                    parts_sh_rest.append(keep_parents.sh_rest)
-                    parts_parent_means.append(keep_parents.means)
-                    parts_parent_idx.append(keep_indices)
-                    parts_octant_idx.append(torch.full(
-                        (keep_parents.num_gaussians,), -1,
-                        dtype=torch.long, device=device))
+                # Parent means for expected_offset
+                tier_parent_means = []
+                for n_cuts in [1, 2, 3]:
+                    tier_mask = split_cuts == n_cuts
+                    if not tier_mask.any():
+                        continue
+                    tier_means = split_parents.means[tier_mask]
+                    n_children_per = 2 ** n_cuts
+                    tier_parent_means.append(tier_means.repeat_interleave(n_children_per, dim=0))
 
-                if split_children is not None:
-                    n_split = split_parents.num_gaussians
-                    parts_means.append(split_children.means)
-                    parts_quats.append(split_children.quats)
-                    parts_log_scales.append(split_children.log_scales)
-                    parts_op.append(split_children.opacities)
-                    parts_sh_dc.append(split_children.sh_dc)
-                    parts_sh_rest.append(split_children.sh_rest)
-                    parts_parent_means.append(split_parent_means)
-                    parts_parent_idx.append(split_indices.repeat_interleave(8))
-                    parts_octant_idx.append(
-                        torch.arange(8, device=device).repeat(n_split))
+                parts_means.append(split_children.means)
+                parts_quats.append(split_children.quats)
+                parts_log_scales.append(split_children.log_scales)
+                parts_op.append(split_children.opacities)
+                parts_sh_dc.append(split_children.sh_dc)
+                parts_sh_rest.append(split_children.sh_rest)
+                parts_parent_means.append(torch.cat(tier_parent_means, dim=0))
+                parts_parent_idx.append(torch.cat(tier_parent_idx, dim=0))
+                parts_child_idx.append(child_idx)
 
-                children = Gaussian(
-                    means=torch.cat(parts_means, dim=0),
-                    quats=torch.cat(parts_quats, dim=0),
-                    log_scales=torch.cat(parts_log_scales, dim=0),
-                    opacities=torch.cat(parts_op, dim=0),
-                    sh_dc=torch.cat(parts_sh_dc, dim=0),
-                    sh_rest=torch.cat(parts_sh_rest, dim=0),
-                )
-                parent_means_repeated = torch.cat(parts_parent_means, dim=0)
-                parent_indices = torch.cat(parts_parent_idx, dim=0)
-                octant_indices = torch.cat(parts_octant_idx, dim=0)
+            if not parts_means:
+                # All excluded — empty level
+                # This shouldn't normally happen; caller should check
+                raise ValueError("All parents excluded — cannot create empty level")
+
+            children = Gaussian(
+                means=torch.cat(parts_means, dim=0),
+                quats=torch.cat(parts_quats, dim=0),
+                log_scales=torch.cat(parts_log_scales, dim=0),
+                opacities=torch.cat(parts_op, dim=0),
+                sh_dc=torch.cat(parts_sh_dc, dim=0),
+                sh_rest=torch.cat(parts_sh_rest, dim=0),
+            )
+            parent_means_repeated = torch.cat(parts_parent_means, dim=0)
+            parent_indices = torch.cat(parts_parent_idx, dim=0)
+            child_indices = torch.cat(parts_child_idx, dim=0)
 
             expected_offset = (children.means - parent_means_repeated).norm(dim=-1)
             expected_offset = expected_offset.clamp(min=1e-4)
@@ -251,7 +276,7 @@ class GaussianTree(nn.Module):
         )
         new_level.register_buffer("expected_offset", expected_offset.detach().clone())
         new_level.register_buffer("parent_indices", parent_indices.detach().clone())
-        new_level.register_buffer("octant_indices", octant_indices.detach().clone())
+        new_level.register_buffer("child_index", child_indices.detach().clone())
         self.levels.append(new_level)
 
     def get_level_gaussians(self, level: int) -> Gaussian:

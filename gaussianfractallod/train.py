@@ -336,47 +336,61 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, Gaussi
     for level_idx in range(start_level, cfg.max_levels):
         current_level = level_idx + 1
 
-        # --- Adaptive splitting: use gradient signal from previous level ---
-        split_mask = None
-        exclude_mask = None
+        # --- Adaptive splitting: tiered cuts based on gradient ---
+        cuts_per_parent = None
+        if tree.depth < current_level:
+            logger.info(f"Level {current_level}: previous level was skipped, stopping.")
+            break
         prev_level = tree.levels[current_level - 1]
         if current_level > 1 and prev_level.grad_count.sum() > 0:
             max_grad, mean_grad = prev_level.split_scores()
             parent_opacity = torch.sigmoid(prev_level.opacities).squeeze(-1)
 
-            # Gradient OR: split if any view needs detail OR consistent coverage gap
-            split_mask = (max_grad > cfg.split_max_threshold) | (mean_grad > cfg.split_mean_threshold)
-            # Opacity: exclude near-transparent parents entirely (no children)
+            N_parents = max_grad.shape[0]
+            device = max_grad.device
+
+            # Start with all kept (0), then assign tiers based on gradient
+            cuts = torch.zeros(N_parents, dtype=torch.long, device=device)
+            cuts[max_grad > cfg.split_1cut_threshold] = 1  # 2 children
+            cuts[max_grad > cfg.split_2cut_threshold] = 2  # 4 children
+            cuts[max_grad > cfg.split_3cut_threshold] = 3  # 8 children
+
+            # Exclude near-transparent parents
             exclude_mask = parent_opacity < cfg.split_min_opacity
+            cuts[exclude_mask] = -1
 
-            n_total = split_mask.shape[0]
-            n_split = (split_mask & ~exclude_mask).sum().item()
-            n_keep = (~split_mask & ~exclude_mask).sum().item()
-            n_exclude = exclude_mask.sum().item()
+            n_3cut = (cuts == 3).sum().item()
+            n_2cut = (cuts == 2).sum().item()
+            n_1cut = (cuts == 1).sum().item()
+            n_keep = (cuts == 0).sum().item()
+            n_exclude = (cuts == -1).sum().item()
+            n_children = n_3cut * 8 + n_2cut * 4 + n_1cut * 2 + n_keep
 
-            # Gradient statistics for threshold calibration
-            alive = ~exclude_mask
+            alive = cuts >= 0
             logger.info(
-                f"Adaptive split: {n_split} subdivide, {n_keep} keep, "
-                f"{n_exclude} exclude (of {n_total} parents)"
+                f"Tiered split: 8ch={n_3cut}, 4ch={n_2cut}, 2ch={n_1cut}, "
+                f"keep={n_keep}, exclude={n_exclude} → {n_children} children"
             )
             if alive.any():
                 logger.info(
-                    f"  Grad stats (alive parents): "
+                    f"  Grad stats (alive): "
                     f"max_grad: mean={max_grad[alive].mean():.5f}, "
                     f"median={max_grad[alive].median():.5f}, "
                     f"p90={max_grad[alive].quantile(0.9):.5f}, "
-                    f"max={max_grad[alive].max():.5f} | "
-                    f"mean_grad: mean={mean_grad[alive].mean():.6f}, "
-                    f"median={mean_grad[alive].median():.6f}, "
-                    f"max={mean_grad[alive].max():.6f}"
+                    f"max={max_grad[alive].max():.5f}"
                 )
+
+            # Skip if all excluded
+            if n_children == 0:
+                logger.info(f"Level {current_level}: all parents excluded, skipping")
+                continue
+
+            cuts_per_parent = cuts
 
         # Add new level
         if tree.depth <= current_level:
             tree.add_level(
-                split_mask=split_mask,
-                exclude_mask=exclude_mask,
+                cuts_per_parent=cuts_per_parent,
                 child_opacity_scale=cfg.child_opacity_scale,
             )
         tree = tree.to(device)

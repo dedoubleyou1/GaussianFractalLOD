@@ -26,10 +26,11 @@ class Config:
     lr_sh_dc: float = 2.5e-3         # SH band 0 (DC color)
     lr_sh_rest: float = 1.25e-4       # SH bands 1-3 (view-dependent), 20× lower per 3DGS
 
-    # Adaptive splitting (OR logic: split if EITHER gradient threshold exceeded)
-    split_max_threshold: float = 0.003   # any single view needs detail
-    split_mean_threshold: float = 0.0005  # consistent gradient across views (coverage)
-    split_min_opacity: float = 0.01      # don't subdivide near-transparent Gaussians
+    # Adaptive splitting — tiered: gradient determines number of cuts (1→2, 1→4, 1→8)
+    split_3cut_threshold: float = 0.004   # 8 children (full octree)
+    split_2cut_threshold: float = 0.001   # 4 children
+    split_1cut_threshold: float = 0.00025 # 2 children
+    split_min_opacity: float = 0.01       # don't subdivide near-transparent Gaussians
 
     # Child opacity: multiply subdivision-derived opacity by this factor.
     # Forces children to re-earn opacity from a low starting point (like 3DGS reset).

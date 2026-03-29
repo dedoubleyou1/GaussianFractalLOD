@@ -97,6 +97,9 @@ def load_checkpoint(
                 level.register_buffer("expected_offset", torch.zeros(n))
             if not hasattr(level, 'parent_indices'):
                 level.register_buffer("parent_indices", torch.zeros(n, dtype=torch.long))
+            # Support both old (octant_indices) and new (child_index) formats
+            if not hasattr(level, 'child_index'):
+                level.register_buffer("child_index", torch.zeros(n, dtype=torch.long))
             if not hasattr(level, 'octant_indices'):
                 level.register_buffer("octant_indices", torch.zeros(n, dtype=torch.long))
             if i == 0:
@@ -108,16 +111,16 @@ def load_checkpoint(
         for _ in range(state["tree_depth"] - 1):
             tree.add_level()
 
-    # Remap legacy sh_coeffs → sh_dc + sh_rest in state dict
+    # Remap legacy fields in state dict
     tree_state = state["tree"]
     remapped = {}
     for key, val in tree_state.items():
         if ".sh_coeffs" in key and "sh_coeffs_packed" not in key:
+            # Legacy: flat sh_coeffs → sh_dc + sh_rest
             prefix = key.replace(".sh_coeffs", "")
             N = val.shape[0]
             D = val.shape[-1]
             if val.dim() == 2:
-                # Legacy flat format (N, D) → split into (N, 1, 3) + (N, K-1, 3)
                 remapped[prefix + ".sh_dc"] = val[:, :3].reshape(N, 1, 3)
                 if D > 3:
                     remapped[prefix + ".sh_rest"] = val[:, 3:].reshape(N, -1, 3)
@@ -125,6 +128,10 @@ def load_checkpoint(
                     remapped[prefix + ".sh_rest"] = torch.zeros(N, 0, 3)
             else:
                 remapped[key] = val
+        elif ".octant_indices" in key:
+            # Legacy: octant_indices → child_index
+            remapped[key] = val  # keep for backward compat
+            remapped[key.replace(".octant_indices", ".child_index")] = val.clamp(min=0)
         else:
             remapped[key] = val
 

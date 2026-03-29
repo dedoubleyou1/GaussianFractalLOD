@@ -368,6 +368,7 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, Gaussi
 
         best_loss = float("inf")
         best_loss_epoch = 0
+        best_epoch_loss = float("inf")
         best_weights = None
         epoch_losses = []
         epoch_loss_accum = 0.0
@@ -437,7 +438,8 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, Gaussi
                 epoch_loss_count = 0
 
                 # Save best weights based on epoch avg loss
-                if avg_loss < best_loss - 1e-6 or best_weights is None:
+                if avg_loss < best_epoch_loss - 1e-6:
+                    best_epoch_loss = avg_loss
                     best_weights = {
                         name: p.data.clone()
                         for name, p in level_module.named_parameters()
@@ -459,12 +461,12 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, Gaussi
                     break
 
         # Restore best weights
-        if best_weights is not None:
+        if cfg.restore_best_weights and best_weights is not None:
             with torch.no_grad():
                 for name, p in level_module.named_parameters():
                     if name in best_weights:
                         p.data.copy_(best_weights[name])
-            logger.info(f"Restored best weights for level {current_level}")
+            logger.info(f"Restored best weights for level {current_level} (epoch loss {best_epoch_loss:.6f})")
 
         # Freeze this level
         for param in tree.level_parameters(current_level):

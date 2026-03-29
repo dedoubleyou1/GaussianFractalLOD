@@ -55,12 +55,12 @@ def _render_gsplat(
     quats = F.normalize(gaussians.quats, dim=-1)  # (N, 4) wxyz
     scales = gaussians.scales()  # (N, 3)
 
-    # SH coefficients: (N, K, 3) packed from dc + rest
+    # SH coefficients: (N, num_sh, 3) packed from dc + rest
     sh_coeffs = gaussians.sh_coeffs_packed
     if sh_degree is None:
-        K = sh_coeffs.shape[1]
-        sh_degree = int(round(K ** 0.5)) - 1
-        assert (sh_degree + 1) ** 2 == K, f"SH dim {K} is not a perfect square"
+        num_sh = sh_coeffs.shape[1]
+        sh_degree = int(round(num_sh ** 0.5)) - 1
+        assert (sh_degree + 1) ** 2 == num_sh, f"SH dim {num_sh} is not a perfect square"
 
     renders, alphas, meta = _gsplat_rasterization(
         means=gaussians.means,

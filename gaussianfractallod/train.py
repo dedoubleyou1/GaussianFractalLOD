@@ -72,6 +72,7 @@ def _train_level_step(
     optimizer: torch.optim.Optimizer,
     cfg: Config,
     background: torch.Tensor | None = None,
+    active_sh_degree: int | None = None,
 ) -> torch.Tensor:
     """Single training step for a level's Gaussians.
 
@@ -141,6 +142,12 @@ def _train_level_step(
         + cfg.reg_aspect_weight * aspect_reg
     )
     total_loss.backward()
+
+    # Zero out gradients for inactive SH bands (progressive activation)
+    if active_sh_degree is not None and active_sh_degree < cfg.sh_degree:
+        active_sh_dim = 3 * ((active_sh_degree + 1) ** 2)
+        if level_module.sh_coeffs.grad is not None:
+            level_module.sh_coeffs.grad[:, active_sh_dim:] = 0.0
 
     # Accumulate gradients for adaptive splitting decisions
     level_module.accumulate_grad()
@@ -407,12 +414,19 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, Gaussi
                 cam_hires = {k: v.to(device) if isinstance(v, torch.Tensor) else v
                              for k, v in cam_hires.items()}
 
+            # Progressive SH activation: unlock one band per sh_band_epochs
+            active_sh = None
+            if cfg.sh_band_epochs > 0 and cfg.sh_degree > 0:
+                epoch = step // num_views
+                active_sh = min(epoch // cfg.sh_band_epochs, cfg.sh_degree)
+
             loss = _train_level_step(
                 tree, current_level,
                 gt_image, gt_hires,
                 camera, cam_hires,
                 optimizer,
                 cfg=cfg, background=rand_bg,
+                active_sh_degree=active_sh,
             )
 
             writer.add_scalar(f"phase2/level_{current_level}/loss", loss.item(), step)

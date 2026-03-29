@@ -15,7 +15,7 @@ class Config:
 
     # Level fitting (Phase 2)
     max_levels: int = 6
-    level_epochs: int = 40            # passes through all training views per level
+    level_epochs: int = 60            # passes through all training views per level
 
     # Per-parameter learning rates (matching 3DGS conventions)
     lr_means: float = 1.6e-4       # position — low, with decay

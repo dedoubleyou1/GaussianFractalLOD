@@ -25,8 +25,9 @@ image = (
     .add_local_dir("gaussianfractallod", remote_path="/app/gaussianfractallod", copy=True)
     .add_local_file("setup.py", remote_path="/app/setup.py", copy=True)
     .run_commands("cd /app && pip install -e .")
-    # Include lego scene in image (complete dataset from repo via LFS)
+    # Include scenes in image (complete dataset from repo via LFS)
     .add_local_dir("nerf_synthetic/lego", remote_path="/app/nerf_synthetic/lego", copy=True)
+    .add_local_dir("nerf_synthetic/ship", remote_path="/app/nerf_synthetic/ship", copy=True)
 )
 
 app = modal.App("gaussianfractallod", image=image)

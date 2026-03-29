@@ -17,12 +17,18 @@ class Gaussian:
     means: torch.Tensor       # (N, 3) positions
     quats: torch.Tensor       # (N, 4) rotation quaternions, wxyz convention
     log_scales: torch.Tensor  # (N, 3) log-space scales
-    opacities: torch.Tensor   # (N, 1) sigmoid-space opacities
-    sh_coeffs: torch.Tensor   # (N, D) SH coefficients (D depends on SH degree)
+    opacities: torch.Tensor   # (N, 1) logit-space opacities (apply sigmoid for alpha)
+    sh_dc: torch.Tensor       # (N, 1, 3) SH band 0 (DC color)
+    sh_rest: torch.Tensor     # (N, K-1, 3) SH bands 1+ (view-dependent), K=(degree+1)²
 
     @property
     def num_gaussians(self) -> int:
         return self.means.shape[0]
+
+    @property
+    def sh_coeffs_packed(self) -> torch.Tensor:
+        """(N, K, 3) SH coefficients for gsplat rendering."""
+        return torch.cat([self.sh_dc, self.sh_rest], dim=1)
 
     def to(self, device: torch.device) -> "Gaussian":
         return Gaussian(
@@ -30,7 +36,8 @@ class Gaussian:
             quats=self.quats.to(device),
             log_scales=self.log_scales.to(device),
             opacities=self.opacities.to(device),
-            sh_coeffs=self.sh_coeffs.to(device),
+            sh_dc=self.sh_dc.to(device),
+            sh_rest=self.sh_rest.to(device),
         )
 
     def scales(self) -> torch.Tensor:

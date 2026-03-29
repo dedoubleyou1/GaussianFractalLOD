@@ -30,22 +30,43 @@ logger = logging.getLogger(__name__)
 
 
 def _get_position_lr(cfg: Config, step: int, max_steps: int) -> float:
-    """Exponential decay for position learning rate (3DGS style)."""
+    """Exponential decay with cosine warmup for position LR (3DGS style).
+
+    Matches the reference 3DGS implementation:
+    - Cosine warmup from delay_mult * lr to lr over first 1% of steps
+    - Then log-linear decay from lr_means to lr_means_final
+    """
     if max_steps <= 1:
         return cfg.lr_means
     t = min(step / max_steps, 1.0)
     log_lr = math.log(cfg.lr_means) * (1 - t) + math.log(cfg.lr_means_final) * t
-    return math.exp(log_lr)
+    lr = math.exp(log_lr)
+
+    # Cosine warmup over first 1% of steps (delay_mult=0.01 per 3DGS)
+    delay_steps = max(max_steps // 100, 1)
+    delay_mult = 0.01
+    if step < delay_steps:
+        warmup = delay_mult + (1 - delay_mult) * math.sin(
+            0.5 * math.pi * step / delay_steps
+        )
+        lr *= warmup
+
+    return lr
 
 
 def _make_optimizer(cfg: Config, level_module) -> torch.optim.Adam:
-    """Create per-parameter-group optimizer (3DGS style)."""
+    """Create per-parameter-group optimizer (3DGS style).
+
+    SH DC and rest have separate learning rates per standard 3DGS:
+    rest LR is 20× lower to prevent view-dependent overfitting.
+    """
     return torch.optim.Adam([
         {"params": [level_module.means], "lr": cfg.lr_means, "name": "means"},
         {"params": [level_module.quats], "lr": cfg.lr_quats, "name": "quats"},
         {"params": [level_module.log_scales], "lr": cfg.lr_log_scales, "name": "log_scales"},
         {"params": [level_module.opacities], "lr": cfg.lr_opacities, "name": "opacities"},
-        {"params": [level_module.sh_coeffs], "lr": cfg.lr_sh_coeffs, "name": "sh_coeffs"},
+        {"params": [level_module.sh_dc], "lr": cfg.lr_sh_dc, "name": "sh_dc"},
+        {"params": [level_module.sh_rest], "lr": cfg.lr_sh_rest, "name": "sh_rest"},
     ], eps=1e-15)
 
 
@@ -145,9 +166,17 @@ def _train_level_step(
 
     # Zero out gradients for inactive SH bands (progressive activation)
     if active_sh_degree is not None and active_sh_degree < cfg.sh_degree:
-        active_sh_dim = 3 * ((active_sh_degree + 1) ** 2)
-        if level_module.sh_coeffs.grad is not None:
-            level_module.sh_coeffs.grad[:, active_sh_dim:] = 0.0
+        if active_sh_degree == 0:
+            # Only DC active — zero all rest gradients
+            if level_module.sh_rest.grad is not None:
+                level_module.sh_rest.grad.zero_()
+        else:
+            # Bands 1..active_sh_degree active, zero higher bands in sh_rest
+            # sh_rest has (K-1) coefficients where K=(degree+1)²
+            # Active rest coefficients: (active_degree+1)² - 1
+            active_rest = (active_sh_degree + 1) ** 2 - 1
+            if level_module.sh_rest.grad is not None:
+                level_module.sh_rest.grad[:, active_rest:, :] = 0.0
 
     # Accumulate gradients for adaptive splitting decisions
     level_module.accumulate_grad()
@@ -237,11 +266,14 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, Gaussi
         )
         roots = init_roots(cfg.num_roots, sh_degree=sh_degree, device=device)
 
-        optimizer = torch.optim.Adam(
-            [roots.means, roots.quats, roots.log_scales,
-             roots.opacities, roots.sh_coeffs],
-            lr=cfg.root_lr, eps=1e-15,
-        )
+        optimizer = torch.optim.Adam([
+            {"params": [roots.means], "lr": cfg.lr_means},
+            {"params": [roots.quats], "lr": cfg.lr_quats},
+            {"params": [roots.log_scales], "lr": cfg.lr_log_scales},
+            {"params": [roots.opacities], "lr": cfg.lr_opacities},
+            {"params": [roots.sh_dc], "lr": cfg.lr_sh_dc},
+            {"params": [roots.sh_rest], "lr": cfg.lr_sh_rest},
+        ], eps=1e-15)
 
         best_loss = float("inf")
         plateau_count = 0
@@ -287,7 +319,8 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, Gaussi
             quats=roots.quats.detach(),
             log_scales=roots.log_scales.detach(),
             opacities=roots.opacities.detach(),
-            sh_coeffs=roots.sh_coeffs.detach(),
+            sh_dc=roots.sh_dc.detach(),
+            sh_rest=roots.sh_rest.detach(),
         )
 
         tree = GaussianTree().to(device)

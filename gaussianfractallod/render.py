@@ -36,16 +36,6 @@ def render_gaussians(
         return _render_pytorch(gaussians, viewmat, K, width, height, background, sh_degree)
 
 
-def _infer_sh_degree(D: int) -> int:
-    if D <= 3:
-        return 0
-    elif D <= 12:
-        return 1
-    elif D <= 27:
-        return 2
-    return 3
-
-
 def _render_gsplat(
     gaussians: Gaussian,
     viewmat: torch.Tensor,
@@ -61,29 +51,23 @@ def _render_gsplat(
     if background is None:
         background = torch.ones(3, device=device)
 
-    N = gaussians.num_gaussians
-    covars = gaussians.covariance()
-
     # Normalized quaternions and scales for gsplat
     quats = F.normalize(gaussians.quats, dim=-1)  # (N, 4) wxyz
     scales = gaussians.scales()  # (N, 3)
 
-    # Infer SH degree from coefficient count
-    D = gaussians.sh_coeffs.shape[-1]
+    # SH coefficients: (N, K, 3) packed from dc + rest
+    sh_coeffs = gaussians.sh_coeffs_packed
     if sh_degree is None:
-        sh_degree = _infer_sh_degree(D)
-
-    num_sh = (sh_degree + 1) ** 2
-    expected_dim = num_sh * 3
-    assert D >= expected_dim
-    sh_coeffs_3 = gaussians.sh_coeffs[:, :expected_dim].reshape(N, num_sh, 3)
+        K = sh_coeffs.shape[1]
+        sh_degree = int(round(K ** 0.5)) - 1
+        assert (sh_degree + 1) ** 2 == K, f"SH dim {K} is not a perfect square"
 
     renders, alphas, meta = _gsplat_rasterization(
         means=gaussians.means,
         quats=quats,
         scales=scales,
         opacities=torch.sigmoid(gaussians.opacities.squeeze(-1)),
-        colors=sh_coeffs_3,
+        colors=sh_coeffs,
         viewmats=viewmat.unsqueeze(0),
         Ks=K.unsqueeze(0),
         width=width,
@@ -168,7 +152,7 @@ def _render_pytorch(
 
     opacities = torch.sigmoid(gaussians.opacities.squeeze(-1))
     C0 = 0.28209479177387814
-    colors = (0.5 + C0 * gaussians.sh_coeffs[:, :3]).clamp(0, 1)
+    colors = (0.5 + C0 * gaussians.sh_dc[:, 0, :]).clamp(0, 1)
 
     yy, xx = torch.meshgrid(
         torch.arange(height, device=device, dtype=torch.float32),

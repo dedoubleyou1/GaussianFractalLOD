@@ -20,7 +20,7 @@ def init_roots(
     Covariance is represented as quaternion + log_scales.
     Initialized as isotropic (identity rotation, scale ~0.37).
     """
-    sh_dim = 3 * ((sh_degree + 1) ** 2)
+    num_sh = (sh_degree + 1) ** 2
 
     means = torch.randn(num_roots, 3, device=device) * 0.5
     means.requires_grad_(True)
@@ -37,11 +37,15 @@ def init_roots(
     opacities = torch.full((num_roots, 1), 2.0, device=device)
     opacities.requires_grad_(True)
 
-    sh_coeffs = torch.randn(num_roots, sh_dim, device=device) * 0.1
-    sh_coeffs.requires_grad_(True)
+    # SH coefficients: DC (band 0) + rest (bands 1+), stored as (N, K, 3)
+    sh_dc = torch.randn(num_roots, 1, 3, device=device) * 0.1
+    sh_dc.requires_grad_(True)
+
+    sh_rest = torch.zeros(num_roots, num_sh - 1, 3, device=device)
+    sh_rest.requires_grad_(True)
 
     return Gaussian(means=means, quats=quats, log_scales=log_scales,
-                    opacities=opacities, sh_coeffs=sh_coeffs)
+                    opacities=opacities, sh_dc=sh_dc, sh_rest=sh_rest)
 
 
 def train_roots_step(
@@ -56,7 +60,8 @@ def train_roots_step(
     optimizer.zero_grad()
     rendered = render_gaussians(
         roots, viewmat=camera["viewmat"], K=camera["K"],
-        width=camera["width"], height=camera["height"], background=background,
+        width=camera["width"], height=camera["height"],
+        background=background,
     )
     loss = rendering_loss(rendered, gt_image, ssim_weight=ssim_weight)
     loss.backward()

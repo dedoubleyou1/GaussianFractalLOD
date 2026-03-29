@@ -121,16 +121,14 @@ def _binary_cut_along_axis(gaussians: Gaussian, axes) -> Gaussian:
     # Child quats: inherit parent quaternion (same orientation)
     child_quats = gaussians.quats  # (N, 4)
 
-    # Color: children inherit parent color exactly (no jitter)
-    sh_right = gaussians.sh_coeffs
-    sh_left = gaussians.sh_coeffs
-
     # Interleave: [right_0, left_0, right_1, left_1, ...]
     means = torch.stack([mu_right, mu_left], dim=1).reshape(2 * N, 3)
     quats = torch.stack([child_quats, child_quats], dim=1).reshape(2 * N, 4)
     log_scales = torch.stack([child_log_scales, child_log_scales], dim=1).reshape(2 * N, 3)
     opacities = torch.stack([child_logit, child_logit], dim=1).reshape(2 * N, 1)
-    sh = torch.stack([sh_right, sh_left], dim=1).reshape(2 * N, -1)
+    # Color: children inherit parent SH exactly
+    sh_dc = gaussians.sh_dc.repeat_interleave(2, dim=0)      # (2N, 1, 3)
+    sh_rest = gaussians.sh_rest.repeat_interleave(2, dim=0)   # (2N, K-1, 3)
 
     return Gaussian(means=means, quats=quats, log_scales=log_scales,
-                    opacities=opacities, sh_coeffs=sh)
+                    opacities=opacities, sh_dc=sh_dc, sh_rest=sh_rest)

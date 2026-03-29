@@ -25,15 +25,13 @@ def export_ply(gaussians: Gaussian, path: str, sh_degree: int = 0) -> None:
         quats = F.normalize(gaussians.quats, dim=-1).cpu().numpy()
         log_scales = gaussians.log_scales.cpu().numpy()
 
-        # SH coefficients: internal layout is (N, num_sh*3) coefficient-major
-        # [SH0_R, SH0_G, SH0_B, SH1_R, SH1_G, SH1_B, ...]
-        # PLY format expects channel-major for f_rest:
-        # [SH1_R, SH2_R, ..., SH15_R, SH1_G, ..., SH15_G, SH1_B, ..., SH15_B]
-        raw_sh = gaussians.sh_coeffs.cpu().numpy()
-        sh_dc = raw_sh[:, :3]
+        # SH: dc is (N, 1, 3), rest is (N, K-1, 3)
+        # PLY f_dc: (N, 3) — just squeeze the middle dim
+        # PLY f_rest: channel-major (N, 3*(K-1)) — transpose then flatten
+        sh_dc = gaussians.sh_dc.cpu().numpy().reshape(N, 3)
         if num_sh > 1:
-            sh_rest_interleaved = raw_sh[:, 3:].reshape(N, num_sh - 1, 3)
-            sh_rest_channelmajor = np.transpose(sh_rest_interleaved, (0, 2, 1)).reshape(N, -1)
+            sh_rest = gaussians.sh_rest.cpu().numpy()  # (N, K-1, 3)
+            sh_rest_channelmajor = np.transpose(sh_rest, (0, 2, 1)).reshape(N, -1)
         else:
             sh_rest_channelmajor = None
 

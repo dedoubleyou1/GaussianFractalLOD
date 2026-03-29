@@ -23,7 +23,8 @@ class Config:
     lr_quats: float = 1e-3          # rotation quaternions
     lr_log_scales: float = 5e-3     # log-space scales
     lr_opacities: float = 2.5e-2    # opacity — high
-    lr_sh_coeffs: float = 2.5e-3    # SH DC color
+    lr_sh_dc: float = 2.5e-3         # SH band 0 (DC color)
+    lr_sh_rest: float = 1.25e-4       # SH bands 1-3 (view-dependent), 20× lower per 3DGS
 
     # Adaptive splitting (OR logic: split if EITHER gradient threshold exceeded)
     split_max_threshold: float = 0.003   # any single view needs detail

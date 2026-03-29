@@ -226,7 +226,7 @@ def analyze_residuals(
             # by checking how far from the parent direction
 
             # Color drift
-            color_drift = (lm.sh_coeffs - lm.sh_coeffs.mean()).abs().mean(dim=-1) if hasattr(lm, 'sh_coeffs') else torch.zeros(1)
+            color_drift = (lm.sh_dc - lm.sh_dc.mean()).abs().mean(dim=-1).mean(dim=-1) if hasattr(lm, 'sh_dc') else torch.zeros(1)
 
             # Opacity drift
             init_opacity_est = 0.1  # rough estimate — children start near this after reset

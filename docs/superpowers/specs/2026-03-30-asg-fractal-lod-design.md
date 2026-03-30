@@ -2,7 +2,9 @@
 
 ## Overview
 
-Replace the current Spherical Harmonics (SH) color representation with Anisotropic Spherical Gaussians (ASGs) that serve a dual purpose: encoding view-dependent appearance AND defining child gaussians for the next LOD level. Each ASG lobe on a parent gaussian materializes into a spatial child gaussian during level transitions, creating a self-similar fractal hierarchy where appearance decomposition directly mirrors spatial decomposition.
+A new parallel approach (alongside the existing SH-based system) that uses Anisotropic Spherical Gaussians (ASGs) to serve a dual purpose: encoding view-dependent appearance AND defining child gaussians for the next LOD level. Each ASG lobe on a parent gaussian materializes into a spatial child gaussian during level transitions, creating a self-similar fractal hierarchy where appearance decomposition directly mirrors spatial decomposition.
+
+This is implemented as an alternative pipeline, not a replacement for the existing SH-based approach. Both systems coexist in the codebase.
 
 ## Motivation
 

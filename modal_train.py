@@ -231,7 +231,7 @@ def analyze_residuals(
 
             # Opacity drift
             init_opacity_est = 0.1  # rough estimate — children start near this after reset
-            opacity_drift = lm.init_opacities + lm.delta_opacities.squeeze(-1).abs().mean()
+            opacity_drift = lm.delta_opacities.squeeze(-1).abs().mean()
 
             N = lm.num_gaussians
             print(f"{level_idx:>6} {N:>8} {pos_drift.mean():.4f} {pos_relative.mean():>10.2f}σ {scale_drift.mean():>12.4f} {'N/A':>11} {color_drift.mean():>12.4f} {opacity_drift:>14.4f}")

@@ -32,6 +32,7 @@ def save_checkpoint(
         "tree_depth": tree.depth,
         "level_sizes": level_sizes,
         "sh_rest_dims": sh_rest_dims,
+        "quantize_bits": tree.quantize_bits,
         "meta": {"phase": phase, "level": level, **extra_meta},
     }
     Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -68,7 +69,7 @@ def load_checkpoint(
             sh_rest=sh[:, 3:].reshape(N, -1, 3) if sh.shape[1] > 3 else torch.zeros(N, 0, 3),
         )
 
-    tree = GaussianTree()
+    tree = GaussianTree(quantize_bits=state.get("quantize_bits", 0))
 
     level_sizes = state.get("level_sizes")
     sh_rest_dims = state.get("sh_rest_dims")
@@ -92,6 +93,7 @@ def load_checkpoint(
                 opacities=torch.zeros(n, 1),
                 sh_dc=torch.zeros(n, 1, 3),
                 sh_rest=torch.zeros(n, k_minus_1, 3),
+                quantize_bits=0 if i == 0 else state.get("quantize_bits", 0),
             )
             if not hasattr(level, 'expected_offset'):
                 level.register_buffer("expected_offset", torch.zeros(n))

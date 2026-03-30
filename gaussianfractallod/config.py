@@ -43,6 +43,9 @@ class Config:
     aspect_dead_zone: float = 2.0  # no aspect penalty up to this ratio beyond init
     max_aspect_ratio: float = 100.0  # hard clamp ceiling
     sh_band_epochs: int = 0           # epochs per SH band activation (0=all bands from start)
+    # Quantization-aware training
+    quantize_bits: int = 0             # delta quantization bits (0=disabled, 10-16=enabled)
+
     # SH degree
     sh_degree: int = 3
 

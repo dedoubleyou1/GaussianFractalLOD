@@ -318,7 +318,7 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, Gaussi
             sh_rest=roots.sh_rest.detach(),
         )
 
-        tree = GaussianTree().to(device)
+        tree = GaussianTree(quantize_bits=cfg.quantize_bits).to(device)
         tree.set_root_level(roots)
 
         save_checkpoint(

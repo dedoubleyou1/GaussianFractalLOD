@@ -18,6 +18,15 @@ from gaussianfractallod.gaussian import Gaussian
 from gaussianfractallod.subdivide import subdivide_variable, subdivide
 
 
+def _quantize_ste(x: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
+    """Quantize with straight-through estimator.
+
+    Forward: round(x / scale) * scale — snaps to nearest grid point.
+    Backward: gradient passes through as if rounding didn't happen.
+    """
+    return x + (torch.round(x / scale) * scale - x).detach()
+
+
 class GaussianLevel(nn.Module):
     """Trainable Gaussians at one level of the hierarchy.
 
@@ -25,12 +34,17 @@ class GaussianLevel(nn.Module):
     position, scale, opacity, and SH are stored as init (buffer) + delta (parameter).
     Quaternions are stored absolute (no delta). The actual values are
     reconstructed in get_gaussians() as init + delta.
+
+    When quantize_bits > 0, deltas pass through quantize-dequantize (STE)
+    in the forward pass so the model trains at deployment precision.
     """
 
     def __init__(self, means: torch.Tensor, quats: torch.Tensor,
                  log_scales: torch.Tensor, opacities: torch.Tensor,
-                 sh_dc: torch.Tensor, sh_rest: torch.Tensor):
+                 sh_dc: torch.Tensor, sh_rest: torch.Tensor,
+                 quantize_bits: int = 0):
         super().__init__()
+        self.quantize_bits = quantize_bits
 
         # Quaternions: absolute (no delta)
         self.quats = nn.Parameter(quats)
@@ -58,15 +72,33 @@ class GaussianLevel(nn.Module):
     def num_gaussians(self) -> int:
         return self.init_means.shape[0]
 
+    def _maybe_quantize(self, delta: torch.Tensor) -> torch.Tensor:
+        """Apply quantization to a delta if enabled.
+
+        During training: STE (forward quantized, backward identity).
+        During eval/export: hard quantize (no gradient needed).
+        """
+        if self.quantize_bits <= 0:
+            return delta
+        if delta.numel() == 0:
+            return delta
+        max_int = (1 << (self.quantize_bits - 1)) - 1
+        amax = delta.detach().abs().amax().clamp(min=1e-10)
+        scale = amax / max_int
+        if self.training:
+            return _quantize_ste(delta, scale)
+        else:
+            return torch.round(delta / scale) * scale
+
     def get_gaussians(self) -> Gaussian:
-        """Reconstruct absolute values from init + delta."""
+        """Reconstruct absolute values from init + quantized delta."""
         return Gaussian(
-            means=self.init_means + self.delta_means,
+            means=self.init_means + self._maybe_quantize(self.delta_means),
             quats=self.quats,
-            log_scales=self.init_log_scales + self.delta_log_scales,
-            opacities=self.init_opacities + self.delta_opacities,
-            sh_dc=self.init_sh_dc + self.delta_sh_dc,
-            sh_rest=self.init_sh_rest + self.delta_sh_rest,
+            log_scales=self.init_log_scales + self._maybe_quantize(self.delta_log_scales),
+            opacities=self.init_opacities + self._maybe_quantize(self.delta_opacities),
+            sh_dc=self.init_sh_dc + self._maybe_quantize(self.delta_sh_dc),
+            sh_rest=self.init_sh_rest + self._maybe_quantize(self.delta_sh_rest),
         )
 
     def accumulate_grad(self) -> None:
@@ -124,9 +156,10 @@ class GaussianLevel(nn.Module):
 class GaussianTree(nn.Module):
     """Hierarchical tree of Gaussian levels."""
 
-    def __init__(self):
+    def __init__(self, quantize_bits: int = 0):
         super().__init__()
         self.levels = nn.ModuleList()
+        self.quantize_bits = quantize_bits
 
     @property
     def depth(self) -> int:
@@ -141,6 +174,7 @@ class GaussianTree(nn.Module):
             opacities=roots.opacities.detach().clone(),
             sh_dc=roots.sh_dc.detach().clone(),
             sh_rest=roots.sh_rest.detach().clone(),
+            quantize_bits=0,  # root is frozen, no quantization needed
         )
         for p in level.parameters():
             p.requires_grad_(False)
@@ -291,6 +325,7 @@ class GaussianTree(nn.Module):
             opacities=children.opacities.detach().clone(),
             sh_dc=children.sh_dc.detach().clone(),
             sh_rest=children.sh_rest.detach().clone(),
+            quantize_bits=self.quantize_bits,
         )
         new_level.register_buffer("expected_offset", expected_offset.detach().clone())
         new_level.register_buffer("parent_indices", parent_indices.detach().clone())

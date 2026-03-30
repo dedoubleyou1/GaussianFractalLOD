@@ -17,7 +17,7 @@ def save_checkpoint(
     """Save training state to disk."""
     level_sizes = [tree.levels[i].num_gaussians for i in range(tree.depth)]
     # Store sh_rest shape for reconstruction: (K-1) where K=(degree+1)²
-    sh_rest_dims = [tree.levels[i].sh_rest.shape[1] for i in range(tree.depth)]
+    sh_rest_dims = [tree.levels[i].init_sh_rest.shape[1] for i in range(tree.depth)]
 
     state = {
         "roots": {
@@ -114,26 +114,52 @@ def load_checkpoint(
     # Remap legacy fields in state dict
     tree_state = state["tree"]
     remapped = {}
+
+    # First pass: collect all keys, handle SH and octant remapping
     for key, val in tree_state.items():
         if ".sh_coeffs" in key and "sh_coeffs_packed" not in key:
-            # Legacy: flat sh_coeffs → sh_dc + sh_rest
             prefix = key.replace(".sh_coeffs", "")
             N = val.shape[0]
             D = val.shape[-1]
             if val.dim() == 2:
-                remapped[prefix + ".sh_dc"] = val[:, :3].reshape(N, 1, 3)
+                remapped[prefix + ".init_sh_dc"] = val[:, :3].reshape(N, 1, 3)
+                remapped[prefix + ".delta_sh_dc"] = torch.zeros(N, 1, 3)
                 if D > 3:
-                    remapped[prefix + ".sh_rest"] = val[:, 3:].reshape(N, -1, 3)
+                    rest = val[:, 3:].reshape(N, -1, 3)
+                    remapped[prefix + ".init_sh_rest"] = rest
+                    remapped[prefix + ".delta_sh_rest"] = torch.zeros_like(rest)
                 else:
-                    remapped[prefix + ".sh_rest"] = torch.zeros(N, 0, 3)
+                    remapped[prefix + ".init_sh_rest"] = torch.zeros(N, 0, 3)
+                    remapped[prefix + ".delta_sh_rest"] = torch.zeros(N, 0, 3)
             else:
                 remapped[key] = val
         elif ".octant_indices" in key:
-            # Legacy: octant_indices → child_index
-            remapped[key] = val  # keep for backward compat
+            remapped[key] = val
             remapped[key.replace(".octant_indices", ".child_index")] = val.clamp(min=0)
         else:
             remapped[key] = val
+
+    # Second pass: convert absolute params to delta params for old checkpoints
+    # Old format: levels.X.means (absolute) + levels.X.init_means (init)
+    # New format: levels.X.delta_means (delta) + levels.X.init_means (init)
+    keys_to_convert = ['means', 'log_scales', 'opacities', 'sh_dc', 'sh_rest']
+    for i in range(100):  # generous upper bound
+        prefix = f'levels.{i}'
+        for param_name in keys_to_convert:
+            abs_key = f'{prefix}.{param_name}'
+            init_key = f'{prefix}.init_{param_name}'
+            delta_key = f'{prefix}.delta_{param_name}'
+
+            if abs_key in remapped and delta_key not in remapped:
+                # Old checkpoint: absolute param, compute delta = abs - init
+                if init_key in remapped:
+                    remapped[delta_key] = remapped[abs_key] - remapped[init_key]
+                else:
+                    # No init stored (e.g., old format without init_opacities)
+                    # Delta is zero, init is the absolute value
+                    remapped[init_key] = remapped[abs_key]
+                    remapped[delta_key] = torch.zeros_like(remapped[abs_key])
+                del remapped[abs_key]
 
     tree.load_state_dict(remapped, strict=False)
 

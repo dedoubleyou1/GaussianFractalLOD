@@ -19,22 +19,35 @@ from gaussianfractallod.subdivide import subdivide_variable, subdivide
 
 
 class GaussianLevel(nn.Module):
-    """Trainable Gaussians at one level of the hierarchy."""
+    """Trainable Gaussians at one level of the hierarchy.
+
+    Uses delta parameterization for compression-friendly training:
+    position, scale, opacity, and SH are stored as init (buffer) + delta (parameter).
+    Quaternions are stored absolute (no delta). The actual values are
+    reconstructed in get_gaussians() as init + delta.
+    """
 
     def __init__(self, means: torch.Tensor, quats: torch.Tensor,
                  log_scales: torch.Tensor, opacities: torch.Tensor,
                  sh_dc: torch.Tensor, sh_rest: torch.Tensor):
         super().__init__()
-        self.means = nn.Parameter(means)
-        self.quats = nn.Parameter(quats)
-        self.log_scales = nn.Parameter(log_scales)
-        self.opacities = nn.Parameter(opacities)
-        self.sh_dc = nn.Parameter(sh_dc)
-        self.sh_rest = nn.Parameter(sh_rest)
 
-        # Store initial values for regularization
+        # Quaternions: absolute (no delta)
+        self.quats = nn.Parameter(quats)
+
+        # Delta-parameterized: trained delta starts at zero, init is frozen buffer
+        self.delta_means = nn.Parameter(torch.zeros_like(means))
+        self.delta_log_scales = nn.Parameter(torch.zeros_like(log_scales))
+        self.delta_opacities = nn.Parameter(torch.zeros_like(opacities))
+        self.delta_sh_dc = nn.Parameter(torch.zeros_like(sh_dc))
+        self.delta_sh_rest = nn.Parameter(torch.zeros_like(sh_rest))
+
+        # Init values (frozen buffers, from parent subdivision)
         self.register_buffer("init_means", means.detach().clone())
         self.register_buffer("init_log_scales", log_scales.detach().clone())
+        self.register_buffer("init_opacities", opacities.detach().clone())
+        self.register_buffer("init_sh_dc", sh_dc.detach().clone())
+        self.register_buffer("init_sh_rest", sh_rest.detach().clone())
 
         # Gradient tracking for adaptive splitting
         self.register_buffer("grad_accum", torch.zeros(means.shape[0]))
@@ -43,22 +56,23 @@ class GaussianLevel(nn.Module):
 
     @property
     def num_gaussians(self) -> int:
-        return self.means.shape[0]
+        return self.init_means.shape[0]
 
     def get_gaussians(self) -> Gaussian:
+        """Reconstruct absolute values from init + delta."""
         return Gaussian(
-            means=self.means,
+            means=self.init_means + self.delta_means,
             quats=self.quats,
-            log_scales=self.log_scales,
-            opacities=self.opacities,
-            sh_dc=self.sh_dc,
-            sh_rest=self.sh_rest,
+            log_scales=self.init_log_scales + self.delta_log_scales,
+            opacities=self.init_opacities + self.delta_opacities,
+            sh_dc=self.init_sh_dc + self.delta_sh_dc,
+            sh_rest=self.init_sh_rest + self.delta_sh_rest,
         )
 
     def accumulate_grad(self) -> None:
         """Accumulate position gradient magnitude for split decisions."""
-        if self.means.grad is not None:
-            grad_norm = self.means.grad.detach().norm(dim=-1)
+        if self.delta_means.grad is not None:
+            grad_norm = self.delta_means.grad.detach().norm(dim=-1)
             self.grad_accum += grad_norm
             self.grad_count += 1
             self.grad_max = torch.max(self.grad_max, grad_norm)
@@ -77,21 +91,25 @@ class GaussianLevel(nn.Module):
     def reset_opacity(self, value: float = -2.2, keep_above: float = 0.5) -> None:
         """Reset low-opacity Gaussians."""
         with torch.no_grad():
-            current_alpha = torch.sigmoid(self.opacities)
+            current_alpha = torch.sigmoid(self.init_opacities + self.delta_opacities)
             reset_mask = current_alpha < keep_above
-            self.opacities[reset_mask] = value
+            # Set delta so that init + delta = value
+            self.delta_opacities[reset_mask] = value - self.init_opacities[reset_mask]
 
     def prune(self, keep_mask: torch.Tensor) -> None:
         """Remove Gaussians where keep_mask is False."""
-        self.means = nn.Parameter(self.means.data[keep_mask])
         self.quats = nn.Parameter(self.quats.data[keep_mask])
-        self.log_scales = nn.Parameter(self.log_scales.data[keep_mask])
-        self.opacities = nn.Parameter(self.opacities.data[keep_mask])
-        self.sh_dc = nn.Parameter(self.sh_dc.data[keep_mask])
-        self.sh_rest = nn.Parameter(self.sh_rest.data[keep_mask])
+        self.delta_means = nn.Parameter(self.delta_means.data[keep_mask])
+        self.delta_log_scales = nn.Parameter(self.delta_log_scales.data[keep_mask])
+        self.delta_opacities = nn.Parameter(self.delta_opacities.data[keep_mask])
+        self.delta_sh_dc = nn.Parameter(self.delta_sh_dc.data[keep_mask])
+        self.delta_sh_rest = nn.Parameter(self.delta_sh_rest.data[keep_mask])
 
         self.register_buffer("init_means", self.init_means[keep_mask])
         self.register_buffer("init_log_scales", self.init_log_scales[keep_mask])
+        self.register_buffer("init_opacities", self.init_opacities[keep_mask])
+        self.register_buffer("init_sh_dc", self.init_sh_dc[keep_mask])
+        self.register_buffer("init_sh_rest", self.init_sh_rest[keep_mask])
         self.register_buffer("grad_accum", self.grad_accum[keep_mask])
         self.register_buffer("grad_count", self.grad_count[keep_mask])
         self.register_buffer("grad_max", self.grad_max[keep_mask])
@@ -284,12 +302,12 @@ class GaussianTree(nn.Module):
 
     def level_parameters(self, level: int):
         return [
-            self.levels[level].means,
+            self.levels[level].delta_means,
             self.levels[level].quats,
-            self.levels[level].log_scales,
-            self.levels[level].opacities,
-            self.levels[level].sh_dc,
-            self.levels[level].sh_rest,
+            self.levels[level].delta_log_scales,
+            self.levels[level].delta_opacities,
+            self.levels[level].delta_sh_dc,
+            self.levels[level].delta_sh_rest,
         ]
 
     def get_gaussians_at_depth(self, target_depth: int) -> Gaussian:

@@ -61,12 +61,12 @@ def _make_optimizer(cfg: Config, level_module) -> torch.optim.Adam:
     rest LR is 20× lower to prevent view-dependent overfitting.
     """
     return torch.optim.Adam([
-        {"params": [level_module.means], "lr": cfg.lr_means, "name": "means"},
+        {"params": [level_module.delta_means], "lr": cfg.lr_means, "name": "means"},
         {"params": [level_module.quats], "lr": cfg.lr_quats, "name": "quats"},
-        {"params": [level_module.log_scales], "lr": cfg.lr_log_scales, "name": "log_scales"},
-        {"params": [level_module.opacities], "lr": cfg.lr_opacities, "name": "opacities"},
-        {"params": [level_module.sh_dc], "lr": cfg.lr_sh_dc, "name": "sh_dc"},
-        {"params": [level_module.sh_rest], "lr": cfg.lr_sh_rest, "name": "sh_rest"},
+        {"params": [level_module.delta_log_scales], "lr": cfg.lr_log_scales, "name": "log_scales"},
+        {"params": [level_module.delta_opacities], "lr": cfg.lr_opacities, "name": "opacities"},
+        {"params": [level_module.delta_sh_dc], "lr": cfg.lr_sh_dc, "name": "sh_dc"},
+        {"params": [level_module.delta_sh_rest], "lr": cfg.lr_sh_rest, "name": "sh_rest"},
     ], eps=1e-15)
 
 
@@ -132,23 +132,22 @@ def _train_level_step(
         loss_children = rendering_loss(rendered_hires, gt_image_hires, ssim_weight=cfg.ssim_weight)
         loss = loss + loss_children
 
-    # Regularization
+    # Regularization (delta parameterization: deltas are the parameters directly)
     level_module = tree.levels[level]
 
-    # Position: drift as fraction of expected offset from parent
+    # Position: delta drift as fraction of expected offset from parent
     if hasattr(level_module, 'expected_offset'):
-        drift = (level_module.means - level_module.init_means).norm(dim=-1)
+        drift = level_module.delta_means.norm(dim=-1)
         normalized_drift = drift / (level_module.expected_offset + 1e-8)
         pos_reg = normalized_drift.pow(2).mean()
     else:
         pos_reg = torch.tensor(0.0, device=loss.device)
 
-    # Scale: penalize volume change (mean-of-axes), free to change shape
-    mean_log_ratio = (gaussians.log_scales - level_module.init_log_scales).mean(dim=-1)
+    # Scale: penalize volume change (mean-of-axes delta)
+    mean_log_ratio = level_module.delta_log_scales.mean(dim=-1)
     scale_reg = torch.exp(mean_log_ratio * mean_log_ratio).mean()
 
-    # Aspect ratio: absolute dead-zone + exp wall. No penalty up to dead_zone
-    # aspect ratio, then exp(x²) ramps up. Anchored to 1:1, not parent shape.
+    # Aspect ratio: absolute dead-zone + exp wall
     spread = (gaussians.log_scales.max(dim=-1).values
               - gaussians.log_scales.min(dim=-1).values)
     dead_zone = math.log(cfg.aspect_dead_zone)
@@ -166,16 +165,12 @@ def _train_level_step(
     # Zero out gradients for inactive SH bands (progressive activation)
     if active_sh_degree is not None and active_sh_degree < cfg.sh_degree:
         if active_sh_degree == 0:
-            # Only DC active — zero all rest gradients
-            if level_module.sh_rest.grad is not None:
-                level_module.sh_rest.grad.zero_()
+            if level_module.delta_sh_rest.grad is not None:
+                level_module.delta_sh_rest.grad.zero_()
         else:
-            # Bands 1..active_sh_degree active, zero higher bands in sh_rest
-            # sh_rest has (K-1) coefficients where K=(degree+1)²
-            # Active rest coefficients: (active_degree+1)² - 1
             active_rest = (active_sh_degree + 1) ** 2 - 1
-            if level_module.sh_rest.grad is not None:
-                level_module.sh_rest.grad[:, active_rest:, :] = 0.0
+            if level_module.delta_sh_rest.grad is not None:
+                level_module.delta_sh_rest.grad[:, active_rest:, :] = 0.0
 
     # Accumulate gradients for adaptive splitting decisions
     level_module.accumulate_grad()
@@ -185,13 +180,15 @@ def _train_level_step(
     # Normalize quaternions after optimizer step
     _normalize_quaternions(level_module)
 
-    # Hard clamp aspect ratio — trivial with log_scales (no eigendecomposition)
+    # Hard clamp aspect ratio on reconstructed log_scales
     if cfg.max_aspect_ratio > 0:
         max_log_ratio = math.log(cfg.max_aspect_ratio)
         with torch.no_grad():
-            ls = level_module.log_scales
+            ls = level_module.init_log_scales + level_module.delta_log_scales
             max_ls = ls.max(dim=-1, keepdim=True).values
-            ls.clamp_(min=max_ls - max_log_ratio)
+            # Clamp by adjusting delta: new_delta = clamped_abs - init
+            clamped = ls.clamp(min=max_ls - max_log_ratio)
+            level_module.delta_log_scales.data.copy_(clamped - level_module.init_log_scales)
 
     return loss.detach()
 
@@ -344,7 +341,9 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, Gaussi
         prev_level = tree.levels[current_level - 1]
         if current_level > 1 and prev_level.grad_count.sum() > 0:
             max_grad, mean_grad = prev_level.split_scores()
-            parent_opacity = torch.sigmoid(prev_level.opacities).squeeze(-1)
+            parent_opacity = torch.sigmoid(
+                prev_level.init_opacities + prev_level.delta_opacities
+            ).squeeze(-1)
 
             N_parents = max_grad.shape[0]
             device = max_grad.device

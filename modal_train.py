@@ -211,12 +211,12 @@ def analyze_residuals(
         lm = tree.levels[level_idx]
         with torch.no_grad():
             # Position drift (absolute and relative to Gaussian scale)
-            pos_drift = (lm.means - lm.init_means).norm(dim=-1)  # (N,)
-            avg_scale = torch.exp(lm.log_scales).mean(dim=-1)  # (N,)
+            pos_drift = (lm.delta_means).norm(dim=-1)  # (N,)
+            avg_scale = torch.exp(lm.init_log_scales + lm.delta_log_scales).mean(dim=-1)  # (N,)
             pos_relative = pos_drift / (avg_scale + 1e-8)
 
             # Scale drift (in log-space)
-            scale_drift = (lm.log_scales - lm.init_log_scales).abs().mean(dim=-1)  # (N,)
+            scale_drift = (lm.delta_log_scales).abs().mean(dim=-1)  # (N,)
 
             # Quaternion drift (angle between init and trained)
             # For now approximate: init quats aren't stored, but we know
@@ -226,11 +226,12 @@ def analyze_residuals(
             # by checking how far from the parent direction
 
             # Color drift
-            color_drift = (lm.sh_dc - lm.sh_dc.mean()).abs().mean(dim=-1).mean(dim=-1) if hasattr(lm, 'sh_dc') else torch.zeros(1)
+            sh_dc = lm.init_sh_dc + lm.delta_sh_dc
+            color_drift = (sh_dc - sh_dc.mean()).abs().mean(dim=-1).mean(dim=-1) if hasattr(lm, 'init_sh_dc') else torch.zeros(1)
 
             # Opacity drift
             init_opacity_est = 0.1  # rough estimate — children start near this after reset
-            opacity_drift = lm.opacities.squeeze(-1).abs().mean()
+            opacity_drift = lm.init_opacities + lm.delta_opacities.squeeze(-1).abs().mean()
 
             N = lm.num_gaussians
             print(f"{level_idx:>6} {N:>8} {pos_drift.mean():.4f} {pos_relative.mean():>10.2f}σ {scale_drift.mean():>12.4f} {'N/A':>11} {color_drift.mean():>12.4f} {opacity_drift:>14.4f}")
@@ -240,8 +241,8 @@ def analyze_residuals(
     for level_idx in range(1, min(tree.depth, 8)):
         lm = tree.levels[level_idx]
         with torch.no_grad():
-            drift_vec = lm.means - lm.init_means  # (N, 3)
-            avg_scale = torch.exp(lm.log_scales).mean(dim=-1, keepdim=True)  # (N, 1)
+            drift_vec = lm.delta_means  # (N, 3)
+            avg_scale = torch.exp(lm.init_log_scales + lm.delta_log_scales).mean(dim=-1, keepdim=True)  # (N, 1)
 
             # Normalize drift by scale to get direction in Gaussian-relative units
             drift_norm = drift_vec / (avg_scale + 1e-8)  # (N, 3)
@@ -281,15 +282,15 @@ def analyze_residuals(
     for level_idx in range(1, tree.depth):
         lm = tree.levels[level_idx]
         with torch.no_grad():
-            pos_drift = (lm.means - lm.init_means).norm(dim=-1)
-            avg_scale = torch.exp(lm.log_scales).mean(dim=-1)
+            pos_drift = (lm.delta_means).norm(dim=-1)
+            avg_scale = torch.exp(lm.init_log_scales + lm.delta_log_scales).mean(dim=-1)
             relative = pos_drift / (avg_scale + 1e-8)
 
             # Fraction of Gaussians that stayed within 1σ of init
             within_1sigma = (relative < 1.0).float().mean().item()
             within_2sigma = (relative < 2.0).float().mean().item()
 
-            scale_change = (lm.log_scales - lm.init_log_scales).abs()
+            scale_change = (lm.delta_log_scales).abs()
             small_scale = (scale_change < 0.5).float().mean().item()  # <50% scale change
 
             print(f"Level {level_idx}: {within_1sigma:.0%} within 1σ, {within_2sigma:.0%} within 2σ, {small_scale:.0%} small scale change")

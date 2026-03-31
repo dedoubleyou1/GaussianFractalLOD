@@ -438,7 +438,7 @@ def render_orbit_videos(
     num_frames: int = 120,
     elevation_deg: float = 30.0,
     radius: float = 4.0,
-    output_size: int = 800,
+    output_size: int = 1024,
     fps: int = 30,
 ) -> list[tuple[str, bytes]]:
     """Render orbit videos for each LOD level. Returns list of (filename, mp4_bytes)."""
@@ -525,6 +525,7 @@ def render_orbit_videos(
         cameras.append(torch.tensor(w2c, device=device))
 
     results = []
+    all_level_frames = []
 
     with torch.no_grad():
         for depth in range(tree.depth):
@@ -563,8 +564,27 @@ def render_orbit_videos(
 
             filename = f"orbit_L{depth:02d}.{ext}"
             results.append((filename, buf.getvalue()))
+            all_level_frames.append(frames)
             print(f"Rendered level {depth}: {gaussians.num_gaussians:,} G, "
                   f"{len(frames)} frames, {len(buf.getvalue()) / 1024:.0f} KB")
+
+    # Combined video: all levels back to back, full orbit each
+    try:
+        import imageio
+        combined_frames = []
+        for level_frames in all_level_frames:
+            combined_frames.extend(level_frames)
+
+        buf = io.BytesIO()
+        writer = imageio.get_writer(buf, format='mp4', fps=fps,
+                                    codec='libx264', quality=8)
+        for f in combined_frames:
+            writer.append_data(np.array(f))
+        writer.close()
+        results.append((f"orbit_combined.mp4", buf.getvalue()))
+        print(f"Combined video: {len(combined_frames)} frames, {len(buf.getvalue()) / 1024:.0f} KB")
+    except ImportError:
+        pass
 
     return results
 

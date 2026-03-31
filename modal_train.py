@@ -490,31 +490,37 @@ def render_orbit_videos(
         except (OSError, IOError):
             continue
 
-    # Generate orbit cameras: circle around Y axis at given elevation
+    # Generate orbit cameras in OpenGL convention (Y-up, -Z forward),
+    # then convert to OpenCV (Y-down, Z-forward) matching our data loader.
     elev_rad = math.radians(elevation_deg)
     cameras = []
     for i in range(num_frames):
         azimuth = 2.0 * math.pi * i / num_frames
-        # Camera position
-        cx = radius * math.cos(elev_rad) * math.cos(azimuth)
+        # Camera position in OpenGL world (Y-up)
+        cx = radius * math.cos(elev_rad) * math.sin(azimuth)
         cy = radius * math.sin(elev_rad)
-        cz = radius * math.cos(elev_rad) * math.sin(azimuth)
+        cz = radius * math.cos(elev_rad) * math.cos(azimuth)
         cam_pos = np.array([cx, cy, cz])
 
-        # Look at origin
-        forward = -cam_pos / np.linalg.norm(cam_pos)
+        # Build camera-to-world (OpenGL: -Z is forward, Y is up)
+        forward = -cam_pos / np.linalg.norm(cam_pos)  # look at origin
         world_up = np.array([0.0, 1.0, 0.0])
         right = np.cross(forward, world_up)
         right = right / (np.linalg.norm(right) + 1e-8)
         up = np.cross(right, forward)
 
-        # World-to-camera (OpenCV convention: Z forward, Y down)
-        R = np.stack([right, -up, forward], axis=0)  # (3, 3)
-        t = -R @ cam_pos
+        # OpenGL c2w: columns are right, up, -forward (back), translation
+        c2w = np.eye(4, dtype=np.float32)
+        c2w[:3, 0] = right
+        c2w[:3, 1] = up
+        c2w[:3, 2] = -forward  # OpenGL: +Z is back
+        c2w[:3, 3] = cam_pos
 
-        w2c = np.eye(4, dtype=np.float32)
-        w2c[:3, :3] = R
-        w2c[:3, 3] = t
+        # Convert to w2c with OpenGL→OpenCV flip (same as data.py)
+        w2c = np.linalg.inv(c2w).astype(np.float32)
+        w2c[1, :] *= -1  # flip Y
+        w2c[2, :] *= -1  # flip Z
+
         cameras.append(torch.tensor(w2c, device=device))
 
     results = []

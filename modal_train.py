@@ -490,36 +490,37 @@ def render_orbit_videos(
         except (OSError, IOError):
             continue
 
-    # Generate orbit cameras in OpenGL convention (Y-up, -Z forward),
-    # then convert to OpenCV (Y-down, Z-forward) matching our data loader.
+    # Generate orbit cameras matching NeRF synthetic convention:
+    # Scene is Z-up, cameras orbit in XY plane, looking at origin.
+    # Build c2w in NeRF/OpenGL convention, then convert to OpenCV for gsplat.
     elev_rad = math.radians(elevation_deg)
     cameras = []
     for i in range(num_frames):
         azimuth = 2.0 * math.pi * i / num_frames
-        # Camera position in OpenGL world (Y-up)
-        cx = radius * math.cos(elev_rad) * math.sin(azimuth)
-        cy = radius * math.sin(elev_rad)
-        cz = radius * math.cos(elev_rad) * math.cos(azimuth)
+        # Camera position (Z-up world): orbit in XY, elevated along Z
+        cx = radius * math.cos(elev_rad) * math.cos(azimuth)
+        cy = radius * math.cos(elev_rad) * math.sin(azimuth)
+        cz = radius * math.sin(elev_rad)
         cam_pos = np.array([cx, cy, cz])
 
-        # Build camera-to-world (OpenGL: -Z is forward, Y is up)
-        forward = -cam_pos / np.linalg.norm(cam_pos)  # look at origin
-        world_up = np.array([0.0, 1.0, 0.0])
+        # Look-at: forward points from camera to origin
+        forward = -cam_pos / np.linalg.norm(cam_pos)
+        world_up = np.array([0.0, 0.0, 1.0])  # Z-up
         right = np.cross(forward, world_up)
         right = right / (np.linalg.norm(right) + 1e-8)
         up = np.cross(right, forward)
 
-        # OpenGL c2w: columns are right, up, -forward (back), translation
+        # c2w in NeRF/OpenGL convention: columns = right, up, -forward, pos
         c2w = np.eye(4, dtype=np.float32)
         c2w[:3, 0] = right
         c2w[:3, 1] = up
-        c2w[:3, 2] = -forward  # OpenGL: +Z is back
+        c2w[:3, 2] = -forward
         c2w[:3, 3] = cam_pos
 
         # Convert to w2c with OpenGL→OpenCV flip (same as data.py)
         w2c = np.linalg.inv(c2w).astype(np.float32)
-        w2c[1, :] *= -1  # flip Y
-        w2c[2, :] *= -1  # flip Z
+        w2c[1, :] *= -1
+        w2c[2, :] *= -1
 
         cameras.append(torch.tensor(w2c, device=device))
 

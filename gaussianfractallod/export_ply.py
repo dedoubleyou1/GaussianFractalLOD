@@ -33,7 +33,7 @@ def _zup_to_yup(means, quats, log_scales):
     # Convert wxyz → xyzw for scipy
     quats_xyzw = np.column_stack([quats[:, 1], quats[:, 2], quats[:, 3], quats[:, 0]])
     rotations = ScipyR.from_quat(quats_xyzw)
-    rotated = q_rot * rotations
+    rotated = rotations * q_rot
     result_xyzw = rotated.as_quat()
     # Convert xyzw → wxyz
     quats_yup = np.column_stack([

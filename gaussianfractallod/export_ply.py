@@ -15,17 +15,17 @@ def _zup_to_yup(means, quats, log_scales):
     """
     means_yup = means.copy()
     means_yup[:, 0] = -means[:, 0]
-    means_yup[:, 1] = means[:, 2]
-    means_yup[:, 2] = means[:, 1]
+    means_yup[:, 1] = -means[:, 2]
+    means_yup[:, 2] = -means[:, 1]
 
     ls_yup = log_scales.copy()
     ls_yup[:, 1] = log_scales[:, 2]
     ls_yup[:, 2] = log_scales[:, 1]
 
     quats_yup = quats.copy()
-    quats_yup[:, 1] = -quats[:, 1]  # negate qx (X axis flipped)
-    quats_yup[:, 2] = quats[:, 3]   # new qy = old qz
-    quats_yup[:, 3] = quats[:, 2]   # new qz = old qy
+    quats_yup[:, 1] = -quats[:, 1]  # negate qx
+    quats_yup[:, 2] = -quats[:, 3]  # new qy = -old qz
+    quats_yup[:, 3] = -quats[:, 2]  # new qz = -old qy
 
     return means_yup, quats_yup, ls_yup
 

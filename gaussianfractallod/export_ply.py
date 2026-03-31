@@ -8,26 +8,78 @@ from pathlib import Path
 from gaussianfractallod.gaussian import Gaussian
 
 
-def _zup_to_yup(means, quats, log_scales):
+def _rotate_sh(sh_rest, rotation):
+    """Rotate SH coefficients (bands 1-3) using Wigner D-matrices.
+
+    Args:
+        sh_rest: (N, K-1, 3) SH coefficients for bands 1+.
+        rotation: scipy.spatial.transform.Rotation object.
+
+    Returns:
+        (N, K-1, 3) rotated SH coefficients.
+    """
+    from sphecerix import tesseral_wigner_D
+
+    N, K_minus_1, C = sh_rest.shape
+    if K_minus_1 == 0:
+        return sh_rest.copy()
+
+    result = sh_rest.copy()
+
+    # Determine max SH band from coefficient count
+    # K-1 = 3 → band 1 only, K-1 = 8 → bands 1-2, K-1 = 15 → bands 1-3
+    idx = 0
+    for l in range(1, 4):
+        n_coeffs = 2 * l + 1
+        if idx + n_coeffs > K_minus_1:
+            break
+        D = tesseral_wigner_D(l, rotation)  # (2l+1, 2l+1)
+        for c in range(C):
+            band = sh_rest[:, idx:idx + n_coeffs, c]  # (N, 2l+1)
+            result[:, idx:idx + n_coeffs, c] = band @ D.T
+        idx += n_coeffs
+
+    return result
+
+
+def _zup_to_yup(means, quats, log_scales, sh_dc, sh_rest):
     """Convert from Z-up (NeRF synthetic) to Y-up coordinate system.
 
-    Y↔Z swap with X negated to preserve handedness: (x, y, z) → (-x, z, y).
+    Our scene has Z=up, Y=forward. SuperSplat/PlayCanvas wants Y=up, Z=forward.
+    Transform: (x, y, z) → (-x, -z, -y) with matching quaternion and SH rotation.
     """
+    from scipy.spatial.transform import Rotation
+
+    # Rotation matrix for our coordinate transform
+    M = np.array([[-1, 0, 0], [0, 0, -1], [0, -1, 0]], dtype=np.float64)
+    rot = Rotation.from_matrix(M)
+
+    # Positions
     means_yup = means.copy()
     means_yup[:, 0] = -means[:, 0]
     means_yup[:, 1] = -means[:, 2]
     means_yup[:, 2] = -means[:, 1]
 
+    # Log scales: swap Y↔Z
     ls_yup = log_scales.copy()
     ls_yup[:, 1] = log_scales[:, 2]
     ls_yup[:, 2] = log_scales[:, 1]
 
-    quats_yup = quats.copy()
-    quats_yup[:, 1] = -quats[:, 1]  # negate qx
-    quats_yup[:, 2] = -quats[:, 3]  # new qy = -old qz
-    quats_yup[:, 3] = -quats[:, 2]  # new qz = -old qy
+    # Quaternions via scipy
+    quats_xyzw = np.column_stack([quats[:, 1], quats[:, 2], quats[:, 3], quats[:, 0]])
+    rotations = Rotation.from_quat(quats_xyzw)
+    rotated = rot * rotations
+    result_xyzw = rotated.as_quat()
+    quats_yup = np.column_stack([
+        result_xyzw[:, 3], result_xyzw[:, 0],
+        result_xyzw[:, 1], result_xyzw[:, 2],
+    ]).astype(np.float32)
 
-    return means_yup, quats_yup, ls_yup
+    # SH: DC is view-independent, no change. Rotate rest bands.
+    sh_dc_yup = sh_dc.copy()
+    sh_rest_yup = _rotate_sh(sh_rest, rot) if sh_rest.shape[1] > 0 else sh_rest.copy()
+
+    return means_yup, quats_yup, ls_yup, sh_dc_yup, sh_rest_yup
 
 
 def export_ply(gaussians: Gaussian, path: str, sh_degree: int = 0,
@@ -48,17 +100,19 @@ def export_ply(gaussians: Gaussian, path: str, sh_degree: int = 0,
         opacities = gaussians.opacities.cpu().numpy()
         quats = F.normalize(gaussians.quats, dim=-1).cpu().numpy()
         log_scales = gaussians.log_scales.cpu().numpy()
+        sh_dc_np = gaussians.sh_dc.cpu().numpy().reshape(N, 1, 3)
+        sh_rest_np = gaussians.sh_rest.cpu().numpy()  # (N, K-1, 3)
 
         if y_up:
-            means, quats, log_scales = _zup_to_yup(means, quats, log_scales)
+            means, quats, log_scales, sh_dc_np, sh_rest_np = _zup_to_yup(
+                means, quats, log_scales, sh_dc_np, sh_rest_np
+            )
 
-        # SH: dc is (N, 1, 3), rest is (N, K-1, 3)
-        # PLY f_dc: (N, 3) — just squeeze the middle dim
-        # PLY f_rest: channel-major (N, 3*(K-1)) — transpose then flatten
-        sh_dc = gaussians.sh_dc.cpu().numpy().reshape(N, 3)
+        # PLY f_dc: (N, 3)
+        sh_dc = sh_dc_np.reshape(N, 3)
+        # PLY f_rest: channel-major (N, 3*(K-1))
         if num_sh > 1:
-            sh_rest = gaussians.sh_rest.cpu().numpy()  # (N, K-1, 3)
-            sh_rest_channelmajor = np.transpose(sh_rest, (0, 2, 1)).reshape(N, -1)
+            sh_rest_channelmajor = np.transpose(sh_rest_np, (0, 2, 1)).reshape(N, -1)
         else:
             sh_rest_channelmajor = None
 

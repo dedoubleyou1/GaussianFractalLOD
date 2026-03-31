@@ -28,14 +28,15 @@ def _zup_to_yup(means, quats, log_scales):
     ls_yup[:, 2] = log_scales[:, 1]
 
     # Quaternion: q_rot = (√2/2, √2/2, 0, 0) in wxyz — +90° around X
+    # Use q_new = q_original * q_rot (rotate the Gaussian's frame)
     s2 = math.sqrt(2) / 2
     qw, qx, qy, qz = s2, s2, 0.0, 0.0
     w, x, y, z = quats[:, 0], quats[:, 1], quats[:, 2], quats[:, 3]
     quats_yup = quats.copy()
-    quats_yup[:, 0] = qw*w - qx*x - qy*y - qz*z
-    quats_yup[:, 1] = qw*x + qx*w + qy*z - qz*y
-    quats_yup[:, 2] = qw*y - qx*z + qy*w + qz*x
-    quats_yup[:, 3] = qw*z + qx*y - qy*x + qz*w
+    quats_yup[:, 0] = w*qw - x*qx - y*qy - z*qz
+    quats_yup[:, 1] = w*qx + x*qw + y*qz - z*qy
+    quats_yup[:, 2] = w*qy - x*qz + y*qw + z*qx
+    quats_yup[:, 3] = w*qz + x*qy - y*qx + z*qw
 
     return means_yup, quats_yup, ls_yup
 

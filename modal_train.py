@@ -595,6 +595,169 @@ def render_orbit_videos(
     return results
 
 
+@app.function(
+    gpu="L4",
+    timeout=1800,
+    volumes={"/checkpoints": vol},
+)
+def render_lod_zoom(
+    scene: str = "lego",
+    sh_degree: int = 0,
+    max_levels: int = 9,
+    run_name: str | None = None,
+    num_frames: int = 600,
+    elevation_deg: float = 30.0,
+    close_radius: float = 4.0,
+    spins: float = 3.0,
+    output_size: int = 1024,
+    fps: int = 30,
+) -> bytes:
+    """Render a zoom-in video demonstrating LOD transitions.
+
+    Camera starts far away and slowly moves closer while the model spins.
+    At each distance, renders the LOD level whose training resolution
+    matches the projected detail level at that distance.
+    """
+    vol.reload()
+    import torch
+    import glob
+    import io
+    import math
+    import numpy as np
+    from PIL import Image, ImageDraw, ImageFont
+
+    from gaussianfractallod.checkpoint import load_checkpoint
+    from gaussianfractallod.data import NerfSyntheticDataset
+    from gaussianfractallod.render import render_gaussians
+    from gaussianfractallod.train import _get_level_resolution
+
+    suffix = run_name or f"sh{sh_degree}_l{max_levels}"
+    checkpoint_dir = f"/checkpoints/{scene}_{suffix}"
+    ckpts = sorted(glob.glob(f"{checkpoint_dir}/phase2_level_*.pt"),
+                   key=lambda p: int(p.split("_level_")[1].split(".")[0]))
+    if not ckpts:
+        print(f"No checkpoints found in {checkpoint_dir}")
+        return b""
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    roots, tree, meta = load_checkpoint(ckpts[-1], device=device)
+
+    dataset = NerfSyntheticDataset(f"/app/nerf_synthetic/{scene}", split="test")
+    _, _, ref_cam = dataset[0]
+    fov_x = 2.0 * math.atan(ref_cam["width"] / (2.0 * ref_cam["K"][0, 0].item()))
+
+    focal = 0.5 * output_size / math.tan(0.5 * fov_x)
+    K = torch.tensor([
+        [focal, 0, output_size / 2.0],
+        [0, focal, output_size / 2.0],
+        [0, 0, 1],
+    ], dtype=torch.float32, device=device)
+
+    background = torch.ones(3, device=device)
+
+    font = None
+    for font_path in ["/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+                      "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"]:
+        try:
+            font = ImageFont.truetype(font_path, 32)
+            break
+        except (OSError, IOError):
+            continue
+
+    # Compute distance-to-level mapping.
+    # Each level was trained at a resolution. The "correct" viewing distance
+    # for that level is where the object projects at that resolution.
+    # distance = close_radius * (full_res / level_res)
+    full_res = 800
+    level_distances = {}
+    for level in range(tree.depth):
+        level_res = _get_level_resolution(level)
+        level_distances[level] = close_radius * (full_res / level_res)
+
+    # Far distance: where level 0 is appropriate
+    far_radius = level_distances[0]
+    # Extrapolate even further for dramatic start
+    far_radius *= 1.5
+
+    print(f"Distance range: {far_radius:.1f} (far) → {close_radius:.1f} (close)")
+    for level in range(tree.depth):
+        print(f"  Level {level}: distance={level_distances[level]:.1f}, "
+              f"res={_get_level_resolution(level)}px")
+
+    elev_rad = math.radians(elevation_deg)
+    frames = []
+
+    with torch.no_grad():
+        for i in range(num_frames):
+            t = i / (num_frames - 1)  # 0 to 1
+
+            # Smooth ease-in-out for zoom
+            t_smooth = 0.5 * (1 - math.cos(math.pi * t))
+
+            # Interpolate distance (log-space for smooth zoom feel)
+            log_far = math.log(far_radius)
+            log_close = math.log(close_radius)
+            radius = math.exp(log_far * (1 - t_smooth) + log_close * t_smooth)
+
+            # Continuous spin
+            azimuth = 2.0 * math.pi * spins * t
+
+            # Pick LOD level based on current distance
+            best_level = 0
+            for level in range(tree.depth):
+                if radius <= level_distances[level]:
+                    best_level = level
+
+            # Camera position (Z-up world)
+            cx = radius * math.cos(elev_rad) * math.cos(azimuth)
+            cy = radius * math.cos(elev_rad) * math.sin(azimuth)
+            cz = radius * math.sin(elev_rad)
+            cam_pos = np.array([cx, cy, cz])
+
+            # Build c2w in OpenGL/NeRF convention (Z-up)
+            forward = -cam_pos / np.linalg.norm(cam_pos)
+            world_up = np.array([0.0, 0.0, 1.0])
+            right = np.cross(forward, world_up)
+            right = right / (np.linalg.norm(right) + 1e-8)
+            up = np.cross(right, forward)
+
+            c2w = np.eye(4, dtype=np.float32)
+            c2w[:3, 0] = right
+            c2w[:3, 1] = up
+            c2w[:3, 2] = -forward
+            c2w[:3, 3] = cam_pos
+
+            w2c = np.linalg.inv(c2w).astype(np.float32)
+            w2c[1, :] *= -1
+            w2c[2, :] *= -1
+            viewmat = torch.tensor(w2c, device=device)
+
+            gaussians = tree.get_gaussians_at_depth(best_level)
+            rendered = render_gaussians(
+                gaussians, viewmat, K,
+                output_size, output_size, background,
+            )
+            img_np = (rendered.cpu().numpy() * 255).clip(0, 255).astype("uint8")
+            pil_img = Image.fromarray(img_np)
+            draw = ImageDraw.Draw(pil_img)
+            label = f"L{best_level}: {gaussians.num_gaussians:,} G"
+            draw.text((20, 20), label, fill=(255, 0, 0), font=font)
+            frames.append(pil_img)
+
+            if i % 60 == 0:
+                print(f"Frame {i}/{num_frames}: d={radius:.1f}, LOD={best_level}")
+
+    import imageio
+    buf = io.BytesIO()
+    writer = imageio.get_writer(buf, format='mp4', fps=fps,
+                                codec='libx264', quality=8)
+    for f in frames:
+        writer.append_data(np.array(f))
+    writer.close()
+    print(f"LOD zoom: {len(frames)} frames, {len(buf.getvalue()) / 1024:.0f} KB")
+    return buf.getvalue()
+
+
 @app.local_entrypoint()
 def main(
     scene: str = "lego",
@@ -606,10 +769,27 @@ def main(
     analyze: bool = False,
     gif: bool = False,
     orbit: bool = False,
+    lod_zoom: bool = False,
     test_index: int = 60,
     resume: str | None = None,
     run_name: str | None = None,
 ):
+    if lod_zoom:
+        print(f"Rendering LOD zoom video...")
+        video_bytes = render_lod_zoom.remote(
+            scene=scene, sh_degree=sh_degree, max_levels=max_levels,
+            run_name=run_name,
+        )
+        import os
+        suffix = run_name or f"sh{sh_degree}_l{max_levels}"
+        out_dir = f"exports/{scene}_{suffix}"
+        os.makedirs(out_dir, exist_ok=True)
+        path = f"{out_dir}/lod_zoom.mp4"
+        with open(path, "wb") as f:
+            f.write(video_bytes)
+        print(f"Saved {path} ({len(video_bytes)/1024:.0f} KB)")
+        return
+
     if orbit:
         print(f"Rendering orbit videos for each LOD level...")
         videos = render_orbit_videos.remote(

@@ -11,37 +11,14 @@ from gaussianfractallod.gaussian import Gaussian
 def _zup_to_yup(means, quats, log_scales):
     """Convert from Z-up (NeRF synthetic) to Y-up coordinate system.
 
-    +90° rotation around X: (x, y, z) → (x, -z, y)
-    Uses scipy for quaternion rotation composition.
+    (x, y, z) → (x, -z, y). Only transforms positions.
+    Quaternions and scales left unchanged.
     """
-    from scipy.spatial.transform import Rotation as ScipyR
-
-    # Positions: (x,y,z) → (x, -z, y)
     means_yup = means.copy()
     means_yup[:, 1] = -means[:, 2]
     means_yup[:, 2] = means[:, 1]
 
-    # Log scales: swap Y↔Z
-    ls_yup = log_scales.copy()
-    ls_yup[:, 1] = log_scales[:, 2]
-    ls_yup[:, 2] = log_scales[:, 1]
-
-    # Quaternions: q_new = q_rot * q_original via scipy
-    M = np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0]], dtype=np.float64)
-    q_rot = ScipyR.from_matrix(M)
-
-    # Convert wxyz → xyzw for scipy
-    quats_xyzw = np.column_stack([quats[:, 1], quats[:, 2], quats[:, 3], quats[:, 0]])
-    rotations = ScipyR.from_quat(quats_xyzw)
-    rotated = rotations * q_rot
-    result_xyzw = rotated.as_quat()
-    # Convert xyzw → wxyz
-    quats_yup = np.column_stack([
-        result_xyzw[:, 3], result_xyzw[:, 0],
-        result_xyzw[:, 1], result_xyzw[:, 2],
-    ]).astype(np.float32)
-
-    return means_yup, quats_yup, ls_yup
+    return means_yup, quats.copy(), log_scales.copy()
 
 
 def export_ply(gaussians: Gaussian, path: str, sh_degree: int = 0,

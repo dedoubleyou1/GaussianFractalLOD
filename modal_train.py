@@ -20,7 +20,7 @@ image = (
     .pip_install("torch==2.5.1", "torchvision==0.20.1",
                  index_url="https://download.pytorch.org/whl/cu121")
     .pip_install("torchmetrics", "lpips", "tensorboard", "numpy", "Pillow",
-                 "pyyaml", "huggingface_hub", "ninja")
+                 "pyyaml", "huggingface_hub", "ninja", "imageio[ffmpeg]")
     .pip_install("gsplat==1.4.0")  # 1.4 has pre-built CUDA; 1.5+ needs JIT
     .add_local_dir("gaussianfractallod", remote_path="/app/gaussianfractallod", copy=True)
     .add_local_file("setup.py", remote_path="/app/setup.py", copy=True)
@@ -425,6 +425,143 @@ def render_lod_gif(
     return buf.getvalue()
 
 
+@app.function(
+    gpu="L4",
+    timeout=1800,
+    volumes={"/checkpoints": vol},
+)
+def render_orbit_videos(
+    scene: str = "lego",
+    sh_degree: int = 0,
+    max_levels: int = 9,
+    run_name: str | None = None,
+    num_frames: int = 120,
+    elevation_deg: float = 30.0,
+    radius: float = 4.0,
+    output_size: int = 800,
+    fps: int = 30,
+) -> list[tuple[str, bytes]]:
+    """Render orbit videos for each LOD level. Returns list of (filename, mp4_bytes)."""
+    vol.reload()
+    import torch
+    import glob
+    import io
+    import math
+    import numpy as np
+    from PIL import Image, ImageDraw, ImageFont
+
+    from gaussianfractallod.checkpoint import load_checkpoint
+    from gaussianfractallod.data import NerfSyntheticDataset
+    from gaussianfractallod.render import render_gaussians
+
+    suffix = run_name or f"sh{sh_degree}_l{max_levels}"
+    checkpoint_dir = f"/checkpoints/{scene}_{suffix}"
+    ckpts = sorted(glob.glob(f"{checkpoint_dir}/phase2_level_*.pt"),
+                   key=lambda p: int(p.split("_level_")[1].split(".")[0]))
+    if not ckpts:
+        print(f"No checkpoints found in {checkpoint_dir}")
+        return []
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    roots, tree, meta = load_checkpoint(ckpts[-1], device=device)
+
+    # Get camera intrinsics from the dataset
+    dataset = NerfSyntheticDataset(f"/app/nerf_synthetic/{scene}", split="test")
+    _, _, ref_cam = dataset[0]
+    fov_x = 2.0 * math.atan(ref_cam["width"] / (2.0 * ref_cam["K"][0, 0].item()))
+
+    # Build intrinsics for output size
+    focal = 0.5 * output_size / math.tan(0.5 * fov_x)
+    K = torch.tensor([
+        [focal, 0, output_size / 2.0],
+        [0, focal, output_size / 2.0],
+        [0, 0, 1],
+    ], dtype=torch.float32, device=device)
+
+    background = torch.ones(3, device=device)
+
+    # Try to load a larger font
+    font = None
+    for font_path in ["/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+                      "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"]:
+        try:
+            font = ImageFont.truetype(font_path, 32)
+            break
+        except (OSError, IOError):
+            continue
+
+    # Generate orbit cameras: circle around Y axis at given elevation
+    elev_rad = math.radians(elevation_deg)
+    cameras = []
+    for i in range(num_frames):
+        azimuth = 2.0 * math.pi * i / num_frames
+        # Camera position
+        cx = radius * math.cos(elev_rad) * math.cos(azimuth)
+        cy = radius * math.sin(elev_rad)
+        cz = radius * math.cos(elev_rad) * math.sin(azimuth)
+        cam_pos = np.array([cx, cy, cz])
+
+        # Look at origin
+        forward = -cam_pos / np.linalg.norm(cam_pos)
+        world_up = np.array([0.0, 1.0, 0.0])
+        right = np.cross(forward, world_up)
+        right = right / (np.linalg.norm(right) + 1e-8)
+        up = np.cross(right, forward)
+
+        # World-to-camera (OpenCV convention: Z forward, Y down)
+        R = np.stack([right, -up, forward], axis=0)  # (3, 3)
+        t = -R @ cam_pos
+
+        w2c = np.eye(4, dtype=np.float32)
+        w2c[:3, :3] = R
+        w2c[:3, 3] = t
+        cameras.append(torch.tensor(w2c, device=device))
+
+    results = []
+
+    with torch.no_grad():
+        for depth in range(tree.depth):
+            gaussians = tree.get_gaussians_at_depth(depth)
+            frames = []
+
+            for frame_idx, viewmat in enumerate(cameras):
+                rendered = render_gaussians(
+                    gaussians, viewmat, K,
+                    output_size, output_size, background,
+                )
+                img_np = (rendered.cpu().numpy() * 255).clip(0, 255).astype("uint8")
+                pil_img = Image.fromarray(img_np)
+                draw = ImageDraw.Draw(pil_img)
+                label = f"L{depth}: {gaussians.num_gaussians:,} G"
+                draw.text((20, 20), label, fill=(255, 0, 0), font=font)
+                frames.append(pil_img)
+
+            # Encode as MP4 via PIL/imageio
+            try:
+                import imageio
+                buf = io.BytesIO()
+                writer = imageio.get_writer(buf, format='mp4', fps=fps,
+                                            codec='libx264', quality=8)
+                for f in frames:
+                    writer.append_data(np.array(f))
+                writer.close()
+                ext = "mp4"
+            except ImportError:
+                # Fallback: APNG
+                buf = io.BytesIO()
+                frames[0].save(buf, format="PNG", save_all=True,
+                               append_images=frames[1:],
+                               duration=1000 // fps, loop=0)
+                ext = "png"
+
+            filename = f"orbit_L{depth:02d}.{ext}"
+            results.append((filename, buf.getvalue()))
+            print(f"Rendered level {depth}: {gaussians.num_gaussians:,} G, "
+                  f"{len(frames)} frames, {len(buf.getvalue()) / 1024:.0f} KB")
+
+    return results
+
+
 @app.local_entrypoint()
 def main(
     scene: str = "lego",
@@ -435,10 +572,28 @@ def main(
     export: bool = False,
     analyze: bool = False,
     gif: bool = False,
+    orbit: bool = False,
     test_index: int = 60,
     resume: str | None = None,
     run_name: str | None = None,
 ):
+    if orbit:
+        print(f"Rendering orbit videos for each LOD level...")
+        videos = render_orbit_videos.remote(
+            scene=scene, sh_degree=sh_degree, max_levels=max_levels,
+            run_name=run_name,
+        )
+        import os
+        suffix = run_name or f"sh{sh_degree}_l{max_levels}"
+        out_dir = f"exports/{scene}_{suffix}"
+        os.makedirs(out_dir, exist_ok=True)
+        for filename, video_bytes in videos:
+            path = f"{out_dir}/{filename}"
+            with open(path, "wb") as f:
+                f.write(video_bytes)
+            print(f"Saved {path} ({len(video_bytes)/1024:.0f} KB)")
+        return
+
     if gif:
         print(f"Rendering LOD GIF (test view {test_index})...")
         gif_bytes = render_lod_gif.remote(

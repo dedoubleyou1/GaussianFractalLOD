@@ -11,27 +11,25 @@ from gaussianfractallod.gaussian import Gaussian
 def _zup_to_yup(means, quats, log_scales):
     """Convert from Z-up (NeRF synthetic) to Y-up coordinate system.
 
-    Transform: (-x, z, y) — 90° rotation mapping +Z→+Y, with X negated
-    to preserve right-handedness. Quaternion derived via scipy.
-    q_rot = (0, 0, √2/2, √2/2) in wxyz.
+    +90° rotation around X: (x, y, z) → (x, -z, y)
+    Maps +Z→-Y. Some viewers treat -Y as screen-up.
+    q_rot = (√2/2, √2/2, 0, 0) in wxyz.
     """
     import math
 
-    # Positions: (x,y,z) → (-x, z, y)
+    # Positions: (x,y,z) → (x, -z, y)
     means_yup = means.copy()
-    means_yup[:, 0] = -means[:, 0]
-    means_yup[:, 1] = means[:, 2]
+    means_yup[:, 1] = -means[:, 2]
     means_yup[:, 2] = means[:, 1]
 
-    # Log scales: X stays, swap Y↔Z
+    # Log scales: swap Y↔Z
     ls_yup = log_scales.copy()
     ls_yup[:, 1] = log_scales[:, 2]
     ls_yup[:, 2] = log_scales[:, 1]
 
-    # Quaternion: q_rot = (0, 0, √2/2, √2/2) in wxyz
-    # Hamilton product: q_new = q_rot * q_original
+    # Quaternion: q_rot = (√2/2, √2/2, 0, 0) in wxyz — +90° around X
     s2 = math.sqrt(2) / 2
-    qw, qx, qy, qz = 0.0, 0.0, s2, s2
+    qw, qx, qy, qz = s2, s2, 0.0, 0.0
     w, x, y, z = quats[:, 0], quats[:, 1], quats[:, 2], quats[:, 3]
     quats_yup = quats.copy()
     quats_yup[:, 0] = qw*w - qx*x - qy*y - qz*z

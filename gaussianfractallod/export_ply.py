@@ -18,7 +18,11 @@ def _zup_to_yup(means, quats, log_scales):
     means_yup[:, 1] = -means[:, 2]
     means_yup[:, 2] = means[:, 1]
 
-    return means_yup, quats.copy(), log_scales.copy()
+    ls_yup = log_scales.copy()
+    ls_yup[:, 1] = log_scales[:, 2]
+    ls_yup[:, 2] = log_scales[:, 1]
+
+    return means_yup, quats.copy(), ls_yup
 
 
 def export_ply(gaussians: Gaussian, path: str, sh_degree: int = 0,

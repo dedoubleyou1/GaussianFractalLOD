@@ -12,6 +12,7 @@ class Config:
     root_lr: float = 1e-3
     root_iterations: int = 10000
     root_convergence_window: int = 1000
+    root_lbfgs: bool = False          # use L-BFGS instead of Adam for root fitting
 
     # Level fitting (Phase 2)
     max_levels: int = 6

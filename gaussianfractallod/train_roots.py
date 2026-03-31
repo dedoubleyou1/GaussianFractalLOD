@@ -1,12 +1,12 @@
-"""Phase 1: Train root-level Gaussians with standard splatting loss.
+"""Phase 1: Train root-level Gaussians.
 
-Simplification: This prototype uses a fixed root count without adaptive
-densification/pruning (unlike standard 3DGS). Roots are initialized
-randomly and optimized via gradient descent. Densification can be added
-later if root quality is insufficient.
+Supports two initialization modes:
+- Data-driven init + Adam gradient descent (default)
+- NLLS via L-BFGS for fast convergence on the small parameter space
 """
 
 import torch
+import torch.nn.functional as F
 from gaussianfractallod.gaussian import Gaussian
 from gaussianfractallod.render import render_gaussians
 from gaussianfractallod.loss import rendering_loss
@@ -123,3 +123,72 @@ def train_roots_step(
     loss.backward()
     optimizer.step()
     return loss.detach()
+
+
+def fit_roots_lbfgs(
+    roots: Gaussian,
+    dataset,
+    device: torch.device,
+    max_iter: int = 100,
+    background: torch.Tensor | None = None,
+) -> Gaussian:
+    """Fit root Gaussians using L-BFGS (quasi-Newton).
+
+    Much faster convergence than Adam for the small parameter space
+    of root Gaussians (~14 params). Uses L2 loss over all training views.
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+
+    if background is None:
+        background = torch.ones(3, device=device)
+
+    params = [roots.means, roots.quats, roots.log_scales,
+              roots.opacities, roots.sh_dc, roots.sh_rest]
+
+    optimizer = torch.optim.LBFGS(
+        params, lr=0.1, max_iter=20, line_search_fn="strong_wolfe",
+    )
+
+    # Preload all views
+    views = []
+    for i in range(len(dataset)):
+        gt_rgb, gt_alpha, camera = dataset[i]
+        gt_rgb = gt_rgb.to(device)
+        gt_alpha = gt_alpha.to(device)
+        cam = {k: v.to(device) if isinstance(v, torch.Tensor) else v
+               for k, v in camera.items()}
+        gt_image = gt_rgb * gt_alpha + (1.0 - gt_alpha) * background.view(1, 1, 3)
+        views.append((gt_image, cam))
+
+    best_loss = float("inf")
+    for iteration in range(max_iter):
+        def closure():
+            optimizer.zero_grad()
+            total_loss = torch.tensor(0.0, device=device)
+            for gt_image, cam in views:
+                rendered = render_gaussians(
+                    roots, viewmat=cam["viewmat"], K=cam["K"],
+                    width=cam["width"], height=cam["height"],
+                    background=background,
+                )
+                # Pure L2 for NLLS (no SSIM — LBFGS needs smooth loss)
+                total_loss = total_loss + F.mse_loss(rendered, gt_image)
+            total_loss.backward()
+            return total_loss
+
+        loss = optimizer.step(closure)
+
+        # Normalize quaternions
+        with torch.no_grad():
+            roots.quats.data = F.normalize(roots.quats.data, dim=-1)
+
+        loss_val = loss.item() if isinstance(loss, torch.Tensor) else loss
+        if loss_val < best_loss:
+            best_loss = loss_val
+
+        if iteration % 10 == 0:
+            logger.info(f"L-BFGS iter {iteration}: loss={loss_val:.6f}")
+
+    logger.info(f"L-BFGS converged: loss={best_loss:.6f} in {max_iter} outer iterations")
+    return roots

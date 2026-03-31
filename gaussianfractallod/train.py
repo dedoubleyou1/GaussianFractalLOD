@@ -21,7 +21,7 @@ from gaussianfractallod.config import Config
 from gaussianfractallod.data import NerfSyntheticDataset
 from gaussianfractallod.gaussian import Gaussian
 from gaussianfractallod.split_tree import GaussianTree
-from gaussianfractallod.train_roots import init_roots, train_roots_step
+from gaussianfractallod.train_roots import init_roots, train_roots_step, fit_roots_lbfgs
 from gaussianfractallod.render import render_gaussians
 from gaussianfractallod.loss import rendering_loss
 from gaussianfractallod.checkpoint import save_checkpoint, load_checkpoint
@@ -262,52 +262,58 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, Gaussi
         roots = init_roots(cfg.num_roots, sh_degree=sh_degree, device=device,
                            dataset=dataset_root)
 
-        optimizer = torch.optim.Adam([
-            {"params": [roots.means], "lr": cfg.lr_means},
-            {"params": [roots.quats], "lr": cfg.lr_quats},
-            {"params": [roots.log_scales], "lr": cfg.lr_log_scales},
-            {"params": [roots.opacities], "lr": cfg.lr_opacities},
-            {"params": [roots.sh_dc], "lr": cfg.lr_sh_dc},
-            {"params": [roots.sh_rest], "lr": cfg.lr_sh_rest},
-        ], eps=1e-15)
+        if cfg.root_lbfgs:
+            # L-BFGS: fast quasi-Newton for the small root parameter space
+            logger.info("Using L-BFGS for root fitting")
+            roots = fit_roots_lbfgs(roots, dataset_root, device, background=background)
+        else:
+            # Adam: standard stochastic gradient descent
+            optimizer = torch.optim.Adam([
+                {"params": [roots.means], "lr": cfg.lr_means},
+                {"params": [roots.quats], "lr": cfg.lr_quats},
+                {"params": [roots.log_scales], "lr": cfg.lr_log_scales},
+                {"params": [roots.opacities], "lr": cfg.lr_opacities},
+                {"params": [roots.sh_dc], "lr": cfg.lr_sh_dc},
+                {"params": [roots.sh_rest], "lr": cfg.lr_sh_rest},
+            ], eps=1e-15)
 
-        best_loss = float("inf")
-        plateau_count = 0
+            best_loss = float("inf")
+            plateau_count = 0
 
-        for step in range(cfg.root_iterations):
-            idx = random.randint(0, len(dataset_root) - 1)
-            gt_rgb, gt_alpha, camera = dataset_root[idx]
-            gt_rgb = gt_rgb.to(device)
-            gt_alpha = gt_alpha.to(device)
-            camera = {k: v.to(device) if isinstance(v, torch.Tensor) else v
-                      for k, v in camera.items()}
+            for step in range(cfg.root_iterations):
+                idx = random.randint(0, len(dataset_root) - 1)
+                gt_rgb, gt_alpha, camera = dataset_root[idx]
+                gt_rgb = gt_rgb.to(device)
+                gt_alpha = gt_alpha.to(device)
+                camera = {k: v.to(device) if isinstance(v, torch.Tensor) else v
+                          for k, v in camera.items()}
 
-            rand_bg = torch.rand(3, device=device)
-            gt_image = gt_rgb * gt_alpha + (1.0 - gt_alpha) * rand_bg.view(1, 1, 3)
+                rand_bg = torch.rand(3, device=device)
+                gt_image = gt_rgb * gt_alpha + (1.0 - gt_alpha) * rand_bg.view(1, 1, 3)
 
-            loss = train_roots_step(
-                roots, gt_image, camera, optimizer,
-                ssim_weight=cfg.ssim_weight, background=rand_bg,
-            )
+                loss = train_roots_step(
+                    roots, gt_image, camera, optimizer,
+                    ssim_weight=cfg.ssim_weight, background=rand_bg,
+                )
 
-            # Normalize quaternions after optimizer step
-            with torch.no_grad():
-                roots.quats.data = F.normalize(roots.quats.data, dim=-1)
+                # Normalize quaternions after optimizer step
+                with torch.no_grad():
+                    roots.quats.data = F.normalize(roots.quats.data, dim=-1)
 
-            writer.add_scalar("phase1/loss", loss.item(), step)
+                writer.add_scalar("phase1/loss", loss.item(), step)
 
-            if loss.item() < best_loss - 1e-5:
-                best_loss = loss.item()
-                plateau_count = 0
-            else:
-                plateau_count += 1
+                if loss.item() < best_loss - 1e-5:
+                    best_loss = loss.item()
+                    plateau_count = 0
+                else:
+                    plateau_count += 1
 
-            if plateau_count >= cfg.root_convergence_window:
-                logger.info(f"Phase 1 converged at step {step}, loss={best_loss:.6f}")
-                break
+                if plateau_count >= cfg.root_convergence_window:
+                    logger.info(f"Phase 1 converged at step {step}, loss={best_loss:.6f}")
+                    break
 
-            if step % 500 == 0:
-                logger.info(f"Phase 1 step {step}: loss={loss.item():.6f}")
+                if step % 500 == 0:
+                    logger.info(f"Phase 1 step {step}: loss={loss.item():.6f}")
 
         # Freeze roots
         roots = Gaussian(

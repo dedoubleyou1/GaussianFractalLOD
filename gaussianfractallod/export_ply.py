@@ -11,18 +11,22 @@ from gaussianfractallod.gaussian import Gaussian
 def _zup_to_yup(means, quats, log_scales):
     """Convert from Z-up (NeRF synthetic) to Y-up coordinate system.
 
-    (x, y, z) → (x, -z, y). Only transforms positions.
-    Quaternions and scales left unchanged.
+    Pure Y↔Z swap: (x, y, z) → (x, z, y).
+    Swaps positions, scales, and quaternion Y/Z components.
     """
     means_yup = means.copy()
-    means_yup[:, 1] = -means[:, 2]
+    means_yup[:, 1] = means[:, 2]
     means_yup[:, 2] = means[:, 1]
 
     ls_yup = log_scales.copy()
     ls_yup[:, 1] = log_scales[:, 2]
     ls_yup[:, 2] = log_scales[:, 1]
 
-    return means_yup, quats.copy(), ls_yup
+    quats_yup = quats.copy()
+    quats_yup[:, 2] = quats[:, 3]  # new qy = old qz
+    quats_yup[:, 3] = quats[:, 2]  # new qz = old qy
+
+    return means_yup, quats_yup, ls_yup
 
 
 def export_ply(gaussians: Gaussian, path: str, sh_degree: int = 0,

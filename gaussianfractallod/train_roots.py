@@ -130,18 +130,15 @@ def fit_roots_lbfgs(
     dataset,
     device: torch.device,
     max_iter: int = 100,
-    background: torch.Tensor | None = None,
 ) -> Gaussian:
     """Fit root Gaussians using L-BFGS (quasi-Newton).
 
     Much faster convergence than Adam for the small parameter space
-    of root Gaussians (~14 params). Uses L2 loss over all training views.
+    of root Gaussians (~14 params). Uses L2 loss over all training views
+    with per-iteration random backgrounds to prevent opacity cheating.
     """
     import logging
     logger = logging.getLogger(__name__)
-
-    if background is None:
-        background = torch.ones(3, device=device)
 
     params = [roots.means, roots.quats, roots.log_scales,
               roots.opacities, roots.sh_dc, roots.sh_rest]
@@ -150,7 +147,7 @@ def fit_roots_lbfgs(
         params, lr=0.1, max_iter=20, line_search_fn="strong_wolfe",
     )
 
-    # Preload all views
+    # Preload views (rgb + alpha separate, composite per-iteration with random bg)
     views = []
     for i in range(len(dataset)):
         gt_rgb, gt_alpha, camera = dataset[i]
@@ -158,21 +155,27 @@ def fit_roots_lbfgs(
         gt_alpha = gt_alpha.to(device)
         cam = {k: v.to(device) if isinstance(v, torch.Tensor) else v
                for k, v in camera.items()}
-        gt_image = gt_rgb * gt_alpha + (1.0 - gt_alpha) * background.view(1, 1, 3)
-        views.append((gt_image, cam))
+        views.append((gt_rgb, gt_alpha, cam))
 
     best_loss = float("inf")
+    bg_gen = torch.Generator(device='cpu')
     for iteration in range(max_iter):
+        # Deterministic random background per iteration — same across all
+        # views and line search evaluations within this step, different
+        # between iterations. Prevents opacity cheating on bright objects.
+        bg_gen.manual_seed(iteration)
+        iter_bg = torch.rand(3, generator=bg_gen).to(device)
+
         def closure():
             optimizer.zero_grad()
             total_loss = torch.tensor(0.0, device=device)
-            for gt_image, cam in views:
+            for gt_rgb, gt_alpha, cam in views:
+                gt_image = gt_rgb * gt_alpha + (1.0 - gt_alpha) * iter_bg.view(1, 1, 3)
                 rendered = render_gaussians(
                     roots, viewmat=cam["viewmat"], K=cam["K"],
                     width=cam["width"], height=cam["height"],
-                    background=background,
+                    background=iter_bg,
                 )
-                # Pure L2 for NLLS (no SSIM — LBFGS needs smooth loss)
                 total_loss = total_loss + F.mse_loss(rendered, gt_image)
             total_loss.backward()
             return total_loss

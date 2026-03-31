@@ -265,7 +265,7 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, Gaussi
         if cfg.root_lbfgs:
             # L-BFGS: fast quasi-Newton for the small root parameter space
             logger.info("Using L-BFGS for root fitting")
-            roots = fit_roots_lbfgs(roots, dataset_root, device, background=background)
+            roots = fit_roots_lbfgs(roots, dataset_root, device)
         else:
             # Adam: standard stochastic gradient descent
             optimizer = torch.optim.Adam([

@@ -12,10 +12,9 @@ def _zup_to_yup(means, quats, log_scales):
     """Convert from Z-up (NeRF synthetic) to Y-up coordinate system.
 
     +90° rotation around X: (x, y, z) → (x, -z, y)
-    Maps +Z→-Y. Some viewers treat -Y as screen-up.
-    q_rot = (√2/2, √2/2, 0, 0) in wxyz.
+    Uses scipy for quaternion rotation composition.
     """
-    import math
+    from scipy.spatial.transform import Rotation as ScipyR
 
     # Positions: (x,y,z) → (x, -z, y)
     means_yup = means.copy()
@@ -27,16 +26,20 @@ def _zup_to_yup(means, quats, log_scales):
     ls_yup[:, 1] = log_scales[:, 2]
     ls_yup[:, 2] = log_scales[:, 1]
 
-    # Quaternion: q_rot = (√2/2, √2/2, 0, 0) in wxyz — +90° around X
-    # Use q_new = q_original * q_rot (rotate the Gaussian's frame)
-    s2 = math.sqrt(2) / 2
-    qw, qx, qy, qz = s2, s2, 0.0, 0.0
-    w, x, y, z = quats[:, 0], quats[:, 1], quats[:, 2], quats[:, 3]
-    quats_yup = quats.copy()
-    quats_yup[:, 0] = w*qw - x*qx - y*qy - z*qz
-    quats_yup[:, 1] = w*qx + x*qw + y*qz - z*qy
-    quats_yup[:, 2] = w*qy - x*qz + y*qw + z*qx
-    quats_yup[:, 3] = w*qz + x*qy - y*qx + z*qw
+    # Quaternions: q_new = q_rot * q_original via scipy
+    M = np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0]], dtype=np.float64)
+    q_rot = ScipyR.from_matrix(M)
+
+    # Convert wxyz → xyzw for scipy
+    quats_xyzw = np.column_stack([quats[:, 1], quats[:, 2], quats[:, 3], quats[:, 0]])
+    rotations = ScipyR.from_quat(quats_xyzw)
+    rotated = q_rot * rotations
+    result_xyzw = rotated.as_quat()
+    # Convert xyzw → wxyz
+    quats_yup = np.column_stack([
+        result_xyzw[:, 3], result_xyzw[:, 0],
+        result_xyzw[:, 1], result_xyzw[:, 2],
+    ]).astype(np.float32)
 
     return means_yup, quats_yup, ls_yup
 

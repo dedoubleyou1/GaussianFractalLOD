@@ -312,6 +312,7 @@ def export_plys(
     sh_degree: int = 0,
     max_levels: int = 9,
     run_name: str | None = None,
+    y_up: bool = False,
 ) -> list[tuple[str, bytes]]:
     """Export PLY files for all levels. Returns list of (filename, ply_bytes)."""
     vol.reload()  # Get latest checkpoints
@@ -341,7 +342,7 @@ def export_plys(
             g = tree.get_gaussians_at_depth(depth)
         filename = f"{scene}_level_{depth}.ply"
         local_path = f"/tmp/{filename}"
-        export_ply(g, local_path, sh_degree=sh_degree)
+        export_ply(g, local_path, sh_degree=sh_degree, y_up=y_up)
         with open(local_path, "rb") as f:
             ply_bytes = f.read()
         results.append((filename, ply_bytes))
@@ -766,6 +767,7 @@ def main(
     max_levels: int = 9,
     eval_only: bool = False,
     export: bool = False,
+    y_up: bool = False,
     analyze: bool = False,
     gif: bool = False,
     orbit: bool = False,
@@ -830,7 +832,7 @@ def main(
 
     if export:
         print("Exporting PLY files...")
-        plys = export_plys.remote(scene=scene, sh_degree=sh_degree, max_levels=max_levels, run_name=run_name)
+        plys = export_plys.remote(scene=scene, sh_degree=sh_degree, max_levels=max_levels, run_name=run_name, y_up=y_up)
         import os
         out_dir = f"exports/{scene}"
         os.makedirs(out_dir, exist_ok=True)

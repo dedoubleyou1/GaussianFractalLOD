@@ -664,25 +664,27 @@ def render_lod_zoom(
         except (OSError, IOError):
             continue
 
-    # Compute distance-to-level mapping.
-    # Each level was trained at a resolution. The "correct" viewing distance
-    # for that level is where the object projects at that resolution.
-    # distance = close_radius * (full_res / level_res)
+    # Compute switchover distances: level N is used until the distance
+    # is close enough that the object projects at level N+1's resolution,
+    # then switch to N+1. This means level N is shown from its own
+    # distance down to level N+1's distance.
+    # distance_for_res = close_radius * (full_res / res)
     full_res = 800
     level_distances = {}
     for level in range(tree.depth):
         level_res = _get_level_resolution(level)
         level_distances[level] = close_radius * (full_res / level_res)
 
-    # Far distance: where level 0 is appropriate
+    # Far distance: switchover point for level 0 (object projects at ~32px)
     far_radius = level_distances[0]
-    # Extrapolate even further for dramatic start
-    far_radius *= 1.5
 
     print(f"Distance range: {far_radius:.1f} (far) → {close_radius:.1f} (close)")
     for level in range(tree.depth):
         print(f"  Level {level}: distance={level_distances[level]:.1f}, "
               f"res={_get_level_resolution(level)}px")
+
+    # Zoom past full res to show surface quality up close
+    min_radius = close_radius * 0.3
 
     elev_rad = math.radians(elevation_deg)
     frames = []
@@ -691,18 +693,16 @@ def render_lod_zoom(
         for i in range(num_frames):
             t = i / (num_frames - 1)  # 0 to 1
 
-            # Smooth ease-in-out for zoom
-            t_smooth = 0.5 * (1 - math.cos(math.pi * t))
-
-            # Interpolate distance (log-space for smooth zoom feel)
+            # Linear interpolation in log-space (constant zoom rate)
             log_far = math.log(far_radius)
-            log_close = math.log(close_radius)
-            radius = math.exp(log_far * (1 - t_smooth) + log_close * t_smooth)
+            log_min = math.log(min_radius)
+            radius = math.exp(log_far + t * (log_min - log_far))
 
             # Continuous spin
             azimuth = 2.0 * math.pi * spins * t
 
-            # Pick LOD level based on current distance
+            # Pick LOD level: use level N until distance is close enough
+            # for level N+1's resolution (switchover at level's trained res)
             best_level = 0
             for level in range(tree.depth):
                 if radius <= level_distances[level]:

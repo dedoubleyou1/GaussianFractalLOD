@@ -259,7 +259,8 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, Gaussi
             f"Phase 1: Fitting {cfg.num_roots} root Gaussians "
             f"(resolution={root_res}px)"
         )
-        roots = init_roots(cfg.num_roots, sh_degree=sh_degree, device=device)
+        roots = init_roots(cfg.num_roots, sh_degree=sh_degree, device=device,
+                           dataset=dataset_root)
 
         optimizer = torch.optim.Adam([
             {"params": [roots.means], "lr": cfg.lr_means},

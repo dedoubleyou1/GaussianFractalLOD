@@ -21,16 +21,17 @@ def render_gaussians(
     height: int,
     background: torch.Tensor | None = None,
     sh_degree: int | None = None,
+    return_alpha: bool = False,
 ) -> torch.Tensor:
     """Render Gaussians to an image.
 
-    Passes quaternions and scales directly to gsplat, which is
-    faster than passing covariance matrices.
+    Args:
+        return_alpha: If True, returns (image, alpha) tuple instead of just image.
     """
     device = gaussians.means.device
 
     if _GSPLAT_AVAILABLE and device.type == "cuda":
-        return _render_gsplat(gaussians, viewmat, K, width, height, background, sh_degree)
+        return _render_gsplat(gaussians, viewmat, K, width, height, background, sh_degree, return_alpha)
     else:
         return _render_pytorch(gaussians, viewmat, K, width, height, background, sh_degree)
 
@@ -43,6 +44,7 @@ def _render_gsplat(
     height: int,
     background: torch.Tensor | None = None,
     sh_degree: int | None = None,
+    return_alpha: bool = False,
 ) -> torch.Tensor:
     """Fast path: gsplat CUDA rasterizer."""
     device = gaussians.means.device
@@ -77,6 +79,8 @@ def _render_gsplat(
     render_img = renders[0]
     render_alpha = alphas[0]
     render_img = render_img + (1.0 - render_alpha) * background.view(1, 1, 3)
+    if return_alpha:
+        return render_img, render_alpha
     return render_img
 
 

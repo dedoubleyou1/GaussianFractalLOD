@@ -21,7 +21,7 @@ from gaussianfractallod.config import Config
 from gaussianfractallod.data import NerfSyntheticDataset
 from gaussianfractallod.gaussian import Gaussian
 from gaussianfractallod.split_tree import GaussianTree
-from gaussianfractallod.train_roots import init_roots, train_roots_step, fit_roots_lbfgs
+from gaussianfractallod.train_roots import init_roots, train_roots_step, fit_roots_lbfgs, fit_roots_silhouette
 from gaussianfractallod.render import render_gaussians
 from gaussianfractallod.loss import rendering_loss
 from gaussianfractallod.checkpoint import save_checkpoint, load_checkpoint
@@ -262,7 +262,11 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, Gaussi
         roots = init_roots(cfg.num_roots, sh_degree=sh_degree, device=device,
                            dataset=dataset_root)
 
-        if cfg.root_lbfgs:
+        if cfg.root_silhouette:
+            # Silhouette-based: prioritizes spatial coverage over color accuracy
+            logger.info("Using silhouette-based L-BFGS for root fitting")
+            roots = fit_roots_silhouette(roots, dataset_root, device)
+        elif cfg.root_lbfgs:
             # L-BFGS: fast quasi-Newton for the small root parameter space
             logger.info("Using L-BFGS for root fitting")
             roots = fit_roots_lbfgs(roots, dataset_root, device)

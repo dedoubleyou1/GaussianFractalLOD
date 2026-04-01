@@ -195,3 +195,102 @@ def fit_roots_lbfgs(
 
     logger.info(f"L-BFGS converged: loss={best_loss:.6f} in {max_iter} outer iterations")
     return roots
+
+
+def fit_roots_silhouette(
+    roots: Gaussian,
+    dataset,
+    device: torch.device,
+    max_iter: int = 100,
+) -> Gaussian:
+    """Fit root Gaussians to match silhouette coverage using L-BFGS.
+
+    Optimizes for alpha/opacity coverage rather than color accuracy.
+    A thin cable and a large body contribute equally if both are uncovered.
+    This ensures the root Gaussian spans the full spatial extent of the scene.
+
+    Two phases:
+    1. Silhouette phase: fit position, scale, opacity to match GT alpha masks
+    2. Color phase: freeze geometry, fit SH to match colors
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+
+    # Phase 1: Silhouette — optimize position, scale, opacity only
+    geom_params = [roots.means, roots.quats, roots.log_scales, roots.opacities]
+    optimizer_geom = torch.optim.LBFGS(
+        geom_params, lr=0.1, max_iter=20, line_search_fn="strong_wolfe",
+    )
+
+    # Preload views with alpha masks
+    views = []
+    for i in range(len(dataset)):
+        gt_rgb, gt_alpha, camera = dataset[i]
+        gt_rgb = gt_rgb.to(device)
+        gt_alpha = gt_alpha.to(device)
+        cam = {k: v.to(device) if isinstance(v, torch.Tensor) else v
+               for k, v in camera.items()}
+        views.append((gt_rgb, gt_alpha, cam))
+
+    bg_gen = torch.Generator(device='cpu')
+
+    logger.info("Phase 1: Silhouette fitting (position, scale, opacity)")
+    for iteration in range(max_iter // 2):
+
+        def closure_geom():
+            optimizer_geom.zero_grad()
+            total_loss = torch.tensor(0.0, device=device)
+            for gt_rgb, gt_alpha, cam in views:
+                # Compare rendered alpha directly against GT alpha.
+                # No color, no background — pure geometric coverage.
+                _, render_alpha = render_gaussians(
+                    roots, viewmat=cam["viewmat"], K=cam["K"],
+                    width=cam["width"], height=cam["height"],
+                    return_alpha=True,
+                )
+                gt_mask = gt_alpha.squeeze(-1)  # (H, W)
+                total_loss = total_loss + F.mse_loss(render_alpha, gt_mask)
+            total_loss.backward()
+            return total_loss
+
+        loss = optimizer_geom.step(closure_geom)
+        with torch.no_grad():
+            roots.quats.data = F.normalize(roots.quats.data, dim=-1)
+
+        if iteration % 10 == 0:
+            loss_val = loss.item() if isinstance(loss, torch.Tensor) else loss
+            logger.info(f"Silhouette iter {iteration}: loss={loss_val:.6f}")
+
+    # Phase 2: Color — optimize SH with geometry frozen
+    logger.info("Phase 2: Color fitting (SH coefficients)")
+    color_params = [roots.sh_dc, roots.sh_rest]
+    optimizer_color = torch.optim.LBFGS(
+        color_params, lr=0.1, max_iter=20, line_search_fn="strong_wolfe",
+    )
+
+    for iteration in range(max_iter // 2):
+        bg_gen.manual_seed(iteration + max_iter)
+        iter_bg = torch.rand(3, generator=bg_gen).to(device)
+
+        def closure_color():
+            optimizer_color.zero_grad()
+            total_loss = torch.tensor(0.0, device=device)
+            for gt_rgb, gt_alpha, cam in views:
+                gt_image = gt_rgb * gt_alpha + (1.0 - gt_alpha) * iter_bg.view(1, 1, 3)
+                rendered = render_gaussians(
+                    roots, viewmat=cam["viewmat"], K=cam["K"],
+                    width=cam["width"], height=cam["height"],
+                    background=iter_bg,
+                )
+                total_loss = total_loss + F.mse_loss(rendered, gt_image)
+            total_loss.backward()
+            return total_loss
+
+        loss = optimizer_color.step(closure_color)
+
+        if iteration % 10 == 0:
+            loss_val = loss.item() if isinstance(loss, torch.Tensor) else loss
+            logger.info(f"Color iter {iteration}: loss={loss_val:.6f}")
+
+    logger.info("Silhouette fitting complete")
+    return roots

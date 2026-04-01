@@ -13,6 +13,7 @@ class Config:
     root_iterations: int = 10000
     root_convergence_window: int = 1000
     root_lbfgs: bool = False          # use L-BFGS instead of Adam for root fitting
+    root_silhouette: bool = False     # use silhouette-based L-BFGS for root fitting
 
     # Level fitting (Phase 2)
     max_levels: int = 6

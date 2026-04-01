@@ -75,17 +75,21 @@ def _zup_to_yup(means, quats, log_scales, sh_dc, sh_rest):
     # and the quaternion rotation handles the world-space mapping.
     ls_yup = log_scales.copy()
 
-    # Quaternions: scipy rotation, consistent with M
+    # Quaternions: R_new = M @ R_old. Scales stay in local frame (unchanged).
+    # Convert PLY wxyz → scipy xyzw, apply rotation, convert back.
     quats_xyzw = np.column_stack([quats[:, 1], quats[:, 2], quats[:, 3], quats[:, 0]])
     rotations = Rotation.from_quat(quats_xyzw)
-    rotated = rot * rotations
+    rotated = rot * rotations  # M @ R_old
     result_xyzw = rotated.as_quat()
+    # Convert scipy xyzw → PLY wxyz
     quats_yup = np.column_stack([
         result_xyzw[:, 3], result_xyzw[:, 0],
         result_xyzw[:, 1], result_xyzw[:, 2],
     ]).astype(np.float32)
 
-    # SH: DC is view-independent, no change. Rotate rest bands with same M.
+    # SH: DC (band 0) is rotationally invariant — no change.
+    # Higher bands rotated with same M, with Condon-Shortley phase correction
+    # to account for 3DGS's non-standard SH sign convention.
     sh_dc_yup = sh_dc.copy()
     sh_rest_yup = _rotate_sh(sh_rest, rot) if sh_rest.shape[1] > 0 else sh_rest.copy()
 

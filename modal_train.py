@@ -22,10 +22,20 @@ image = (
     .pip_install("torchmetrics", "lpips", "tensorboard", "numpy", "Pillow",
                  "pyyaml", "huggingface_hub", "ninja", "imageio[ffmpeg]",
                  "scipy<1.15", "sphecerix", "matplotlib")
-    .pip_install("gsplat==1.4.0")  # 1.4 has pre-built CUDA; 1.5+ needs JIT
+    .pip_install("gsplat==1.4.0")
     .add_local_dir("gaussianfractallod", remote_path="/app/gaussianfractallod", copy=True)
     .add_local_file("setup.py", remote_path="/app/setup.py", copy=True)
     .run_commands("cd /app && pip install -e .")
+    # Pre-compile gsplat CUDA kernels during image build (with GPU).
+    # Eliminates ~2 min JIT compilation on every container start.
+    .run_commands(
+        "python -c '"
+        "import torch; "
+        "from gsplat import rasterization; "
+        "print(f\"gsplat compiled for {torch.cuda.get_device_name(0)}\")"
+        "'",
+        gpu="L4",
+    )
     # Include all NeRF Synthetic scenes (complete dataset from repo via LFS)
     .add_local_dir("nerf_synthetic/chair", remote_path="/app/nerf_synthetic/chair", copy=True)
     .add_local_dir("nerf_synthetic/drums", remote_path="/app/nerf_synthetic/drums", copy=True)

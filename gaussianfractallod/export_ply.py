@@ -65,15 +65,11 @@ def _zup_to_yup(means, quats, log_scales, sh_dc, sh_rest):
     ls_yup[:, 1] = log_scales[:, 2]
     ls_yup[:, 2] = log_scales[:, 1]
 
-    # Quaternions via scipy
-    quats_xyzw = np.column_stack([quats[:, 1], quats[:, 2], quats[:, 3], quats[:, 0]])
-    rotations = Rotation.from_quat(quats_xyzw)
-    rotated = rot * rotations
-    result_xyzw = rotated.as_quat()
-    quats_yup = np.column_stack([
-        result_xyzw[:, 3], result_xyzw[:, 0],
-        result_xyzw[:, 1], result_xyzw[:, 2],
-    ]).astype(np.float32)
+    # Quaternions: component swap (confirmed working at commit 01c8b02)
+    quats_yup = quats.copy()
+    quats_yup[:, 1] = -quats[:, 1]  # negate qx
+    quats_yup[:, 2] = -quats[:, 3]  # new qy = -old qz
+    quats_yup[:, 3] = -quats[:, 2]  # new qz = -old qy
 
     # SH: DC is view-independent, no change. Rotate rest bands.
     sh_dc_yup = sh_dc.copy()

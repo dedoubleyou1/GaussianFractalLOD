@@ -295,8 +295,85 @@ def fit_gaussian_to_views(dataset, device: torch.device, sh_degree: int = 0) -> 
     # projected Gaussian: m = α · 2π · sqrt(det(Σ_2d)).
     # So per-view opacity: α_i = m_i / (2π · sqrt(det(Σ_2d_i)))
     #
-    # Combined with Voronoi weights for angular uniformity.
+    # If α > 1.0 for any view, the Gaussian is too small to contain
+    # the GT mass even at full opacity. In that case, proportionally
+    # expand the covariance so the mass matches at α = 1.0, then
+    # re-solve the 3D covariance with the expanded 2D covariances.
     # ----------------------------------------------------------------
+    needs_expansion = False
+    for vs in view_stats:
+        det_2d = np.linalg.det(vs["cov_2d"])
+        if det_2d > 1e-10:
+            alpha_est = vs["total_mass"] / (2 * np.pi * np.sqrt(det_2d))
+            if alpha_est > 1.0:
+                # Expand this view's covariance so mass matches at alpha=1.0
+                # scale² = alpha_est (since mass = alpha * 2π * sqrt(det(s²Σ)))
+                vs["cov_2d"] = vs["cov_2d"] * alpha_est
+                needs_expansion = True
+
+    if needs_expansion:
+        # Re-solve 3D covariance with expanded 2D covariances
+        rows_A = []
+        rows_b = []
+        row_weights = []
+        for i, vs in enumerate(view_stats):
+            R = vs["R"]
+            t = -R @ vs["cam_pos"]
+            cam_point = R @ center_3d + t
+            depth = cam_point[2]
+            if abs(depth) < 1e-6:
+                continue
+            fx, fy = vs["fx"], vs["fy"]
+            x_cam, y_cam = cam_point[0], cam_point[1]
+            J = np.array([
+                [fx / depth, 0, -fx * x_cam / depth**2],
+                [0, fy / depth, -fy * y_cam / depth**2],
+            ])
+            M = J @ R
+            idx_map = {(0, 0): 0, (0, 1): 1, (0, 2): 2,
+                       (1, 0): 1, (1, 1): 3, (1, 2): 4,
+                       (2, 0): 2, (2, 1): 4, (2, 2): 5}
+            for a, b, target in [(0, 0, vs["cov_2d"][0, 0]),
+                                  (0, 1, vs["cov_2d"][0, 1]),
+                                  (1, 1, vs["cov_2d"][1, 1])]:
+                row = np.zeros(6)
+                for ii in range(3):
+                    for jj in range(3):
+                        k = idx_map[(ii, jj)]
+                        coeff = M[a, ii] * M[b, jj]
+                        if ii != jj:
+                            row[k] += coeff
+                        else:
+                            row[k] += coeff
+                rows_A.append(row)
+                rows_b.append(target)
+                row_weights.append(weights[i])
+
+        A_mat = np.array(rows_A)
+        b_vec = np.array(rows_b)
+        W_diag = np.sqrt(np.array(row_weights))
+        A_weighted = A_mat * W_diag[:, None]
+        b_weighted = b_vec * W_diag
+        sigma_6, _, _, _ = np.linalg.lstsq(A_weighted, b_weighted, rcond=None)
+
+        cov_3d = np.array([
+            [sigma_6[0], sigma_6[1], sigma_6[2]],
+            [sigma_6[1], sigma_6[3], sigma_6[4]],
+            [sigma_6[2], sigma_6[4], sigma_6[5]],
+        ])
+        eigvals, eigvecs = np.linalg.eigh(cov_3d)
+        eigvals = np.maximum(eigvals, 1e-7)
+        cov_3d = eigvecs @ np.diag(eigvals) @ eigvecs.T
+        scales = np.sqrt(eigvals).astype(np.float32)
+        log_scales = np.log(scales)
+        if np.linalg.det(eigvecs) < 0:
+            eigvecs[:, 0] *= -1
+        quat_scipy = Rotation.from_matrix(eigvecs)
+        quat_xyzw = quat_scipy.as_quat()
+        quat_wxyz = np.array([quat_xyzw[3], quat_xyzw[0],
+                              quat_xyzw[1], quat_xyzw[2]], dtype=np.float32)
+
+    # Recompute opacity with (possibly expanded) covariances
     opacity_estimates = []
     for vs in view_stats:
         det_2d = np.linalg.det(vs["cov_2d"])

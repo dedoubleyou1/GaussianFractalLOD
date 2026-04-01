@@ -11,6 +11,10 @@ from gaussianfractallod.gaussian import Gaussian
 def _rotate_sh(sh_rest, rotation):
     """Rotate SH coefficients (bands 1-3) using Wigner D-matrices.
 
+    3DGS uses a non-standard sign convention for real SH (Condon-Shortley
+    phase: coefficients for odd |m| are negated vs standard math convention).
+    We correct for this before/after applying the Wigner D-matrix.
+
     Args:
         sh_rest: (N, K-1, 3) SH coefficients for bands 1+.
         rotation: scipy.spatial.transform.Rotation object.
@@ -26,17 +30,24 @@ def _rotate_sh(sh_rest, rotation):
 
     result = sh_rest.copy()
 
-    # Determine max SH band from coefficient count
-    # K-1 = 3 → band 1 only, K-1 = 8 → bands 1-2, K-1 = 15 → bands 1-3
     idx = 0
     for l in range(1, 4):
         n_coeffs = 2 * l + 1
         if idx + n_coeffs > K_minus_1:
             break
+
+        # Sign correction for 3DGS convention: (-1)^|m| per coefficient
+        # m ranges from -l to +l
+        phase = np.array([(-1) ** abs(m) for m in range(-l, l + 1)], dtype=np.float64)
+
         D = tesseral_wigner_D(l, rotation)  # (2l+1, 2l+1)
+
+        # D' = phase @ D @ phase (phase is diagonal, so element-wise)
+        D_corrected = (phase[:, None] * D * phase[None, :])
+
         for c in range(C):
             band = sh_rest[:, idx:idx + n_coeffs, c]  # (N, 2l+1)
-            result[:, idx:idx + n_coeffs, c] = band @ D.T
+            result[:, idx:idx + n_coeffs, c] = band @ D_corrected.T
         idx += n_coeffs
 
     return result

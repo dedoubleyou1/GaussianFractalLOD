@@ -22,6 +22,7 @@ from scipy.spatial import SphericalVoronoi
 from scipy.spatial.transform import Rotation
 
 from gaussianfractallod.gaussian import Gaussian
+from gaussianfractallod.metrics import compute_alpha_moments, expand_covariance_for_mass
 
 
 def fit_gaussian_to_views(dataset, device: torch.device, sh_degree: int = 0) -> Gaussian:
@@ -55,66 +56,32 @@ def fit_gaussian_to_views(dataset, device: torch.device, sh_degree: int = 0) -> 
         rgb = gt_rgb.numpy()  # (H, W, 3)
         H, W = alpha.shape
 
-        # Pixel coordinate grid
-        yy, xx = np.mgrid[:H, :W].astype(np.float64)
-
-        total_mass = alpha.sum()
-        if total_mass < 1e-8:
-            continue  # skip empty views
-
-        # Alpha-weighted 2D centroid
-        mean_x = (alpha * xx).sum() / total_mass
-        mean_y = (alpha * yy).sum() / total_mass
-        mean_2d = np.array([mean_x, mean_y])
-
-        # Alpha-weighted 2D covariance
-        dx = xx - mean_x
-        dy = yy - mean_y
-        cov_xx = (alpha * dx * dx).sum() / total_mass
-        cov_xy = (alpha * dx * dy).sum() / total_mass
-        cov_yy = (alpha * dy * dy).sum() / total_mass
-        cov_2d = np.array([[cov_xx, cov_xy], [cov_xy, cov_yy]])
+        # 2D moments + opacity with covariance expansion (shared with metrics)
+        moments = compute_alpha_moments(alpha)
+        if moments["centroid"] is None:
+            continue
+        moments = expand_covariance_for_mass(moments)
 
         # Per-view average color (alpha-weighted)
-        avg_color = np.zeros(3)
-        for c in range(3):
-            avg_color[c] = (alpha * rgb[:, :, c]).sum() / total_mass
+        total_mass = moments["mass"]
+        avg_color = np.array([(alpha * rgb[:, :, c]).sum() / total_mass for c in range(3)])
 
         # Camera parameters
         w2c = camera["viewmat"].numpy()
         K = camera["K"].numpy()
         R = w2c[:3, :3]
         t = w2c[:3, 3]
-        # Camera position in world space: -R^T @ t
-        # Valid for any rigid w2c regardless of axis convention.
-        cam_pos = -R.T @ t
-
-        fx, fy = K[0, 0], K[1, 1]
-        cx, cy = K[0, 2], K[1, 2]
-
-        # Per-view opacity from mass conservation:
-        # α = mass / (2π · sqrt(det(Σ_2d)))
-        # If α > 1.0, the Gaussian is too small — expand covariance
-        # by α² so mass matches at α = 1.0.
-        det_2d = np.linalg.det(cov_2d)
-        if det_2d > 1e-10:
-            alpha_est = total_mass / (2 * np.pi * np.sqrt(det_2d))
-            if alpha_est > 1.0:
-                cov_2d = cov_2d * alpha_est ** 2
-                alpha_est = 1.0
-            alpha_est = float(np.clip(alpha_est, 0.01, 0.99))
-        else:
-            alpha_est = 0.5
+        cam_pos = -R.T @ t  # camera position in world space
 
         view_stats.append({
-            "mean_2d": mean_2d,
-            "cov_2d": cov_2d,
+            "mean_2d": moments["centroid"],
+            "cov_2d": moments["covariance"],
             "total_mass": total_mass,
-            "alpha": alpha_est,
+            "alpha": moments["alpha"],
             "avg_color": avg_color,
             "cam_pos": cam_pos,
             "R": R,
-            "fx": fx, "fy": fy, "cx": cx, "cy": cy,
+            "fx": K[0, 0], "fy": K[1, 1], "cx": K[0, 2], "cy": K[1, 2],
         })
         cam_positions.append(cam_pos)
 

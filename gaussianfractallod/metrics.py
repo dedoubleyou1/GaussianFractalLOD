@@ -48,6 +48,30 @@ def compute_alpha_moments(alpha: np.ndarray) -> dict:
     return {"centroid": centroid, "covariance": covariance, "mass": float(total_mass)}
 
 
+def expand_covariance_for_mass(moments: dict) -> dict:
+    """Expand covariance so a Gaussian at alpha=1.0 matches the total mass.
+
+    If alpha = mass / (2π · sqrt(det(Σ))) > 1.0, the covariance is too
+    small. Scale it by alpha² so mass matches at alpha=1.0.
+
+    Returns a new dict with possibly expanded covariance and the computed alpha.
+    """
+    if moments["covariance"] is None or moments["mass"] < 1e-8:
+        return {**moments, "alpha": 0.0}
+
+    det = np.linalg.det(moments["covariance"])
+    if det < 1e-10:
+        return {**moments, "alpha": 0.5}
+
+    alpha = moments["mass"] / (2 * np.pi * np.sqrt(det))
+    cov = moments["covariance"]
+    if alpha > 1.0:
+        cov = cov * alpha ** 2
+        alpha = 1.0
+
+    return {**moments, "covariance": cov, "alpha": float(np.clip(alpha, 0.01, 0.99))}
+
+
 def compare_alpha_moments(gt_alpha: np.ndarray, render_alpha: np.ndarray) -> dict:
     """Compare 2D alpha moments between ground truth and rendered view.
 
@@ -62,8 +86,8 @@ def compare_alpha_moments(gt_alpha: np.ndarray, render_alpha: np.ndarray) -> dic
         - mass_ratio: rendered_mass / gt_mass (1.0 = perfect)
         - mass_error: absolute difference in total mass
     """
-    gt_moments = compute_alpha_moments(gt_alpha)
-    render_moments = compute_alpha_moments(render_alpha)
+    gt_moments = expand_covariance_for_mass(compute_alpha_moments(gt_alpha))
+    render_moments = expand_covariance_for_mass(compute_alpha_moments(render_alpha))
 
     result = {}
 

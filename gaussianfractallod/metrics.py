@@ -66,7 +66,7 @@ def expand_covariance_for_mass(moments: dict) -> dict:
     alpha = moments["mass"] / (2 * np.pi * np.sqrt(det))
     cov = moments["covariance"]
     if alpha > 1.0:
-        cov = cov * alpha ** 2
+        cov = cov * alpha
         alpha = 1.0
 
     return {**moments, "covariance": cov, "alpha": float(np.clip(alpha, 0.01, 0.99))}

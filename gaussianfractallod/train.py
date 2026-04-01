@@ -264,9 +264,39 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, Gaussi
                            dataset=dataset_root)
 
         if cfg.root_geometric:
-            # Closed-form: derives Gaussian from image moments, no optimization
+            # Closed-form: derives Gaussian from image moments, no optimization.
+            # Position, scale, quaternion, opacity from geometry.
+            # Then train SH coefficients to learn color/view-dependence.
             logger.info("Using geometric fit from image moments")
             roots = fit_gaussian_to_views(dataset_root, device, sh_degree=sh_degree)
+
+            # Phase 1b: SH refinement — geometry frozen, only color trains
+            logger.info("Phase 1b: Training SH on geometric root")
+            sh_optimizer = torch.optim.Adam([
+                {"params": [roots.sh_dc], "lr": cfg.lr_sh_dc},
+                {"params": [roots.sh_rest], "lr": cfg.lr_sh_rest},
+            ], eps=1e-15)
+
+            for step in range(cfg.root_iterations):
+                idx = random.randint(0, len(dataset_root) - 1)
+                gt_rgb, gt_alpha, camera = dataset_root[idx]
+                gt_rgb = gt_rgb.to(device)
+                gt_alpha = gt_alpha.to(device)
+                camera = {k: v.to(device) if isinstance(v, torch.Tensor) else v
+                          for k, v in camera.items()}
+
+                rand_bg = torch.rand(3, device=device)
+                gt_image = gt_rgb * gt_alpha + (1.0 - gt_alpha) * rand_bg.view(1, 1, 3)
+
+                loss = train_roots_step(
+                    roots, gt_image, camera, sh_optimizer,
+                    ssim_weight=cfg.ssim_weight, background=rand_bg,
+                )
+                writer.add_scalar("phase1b/loss", loss.item(), step)
+
+                if step % 500 == 0:
+                    logger.info(f"Phase 1b step {step}: loss={loss.item():.6f}")
+
         elif cfg.root_silhouette:
             # Silhouette-based: prioritizes spatial coverage over color accuracy
             logger.info("Using silhouette-based L-BFGS for root fitting")

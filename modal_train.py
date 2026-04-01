@@ -690,6 +690,9 @@ def render_lod_zoom(
     # Set zoom endpoints so each LOD level gets equal screen time.
     # Switch points are already equally spaced in log-space (√2 apart),
     # so place start/end one √2 step beyond the outermost switch points.
+    if tree.depth < 2:
+        print(f"Need at least 2 LOD levels for zoom video, got {tree.depth}")
+        return b""
     sqrt2 = 2 ** 0.5
     far_radius = level_distances[0] * sqrt2
     zoom_close = level_distances[tree.depth - 2] / sqrt2
@@ -702,6 +705,9 @@ def render_lod_zoom(
     elev_rad = math.radians(elevation_deg)
     frames = []
 
+    log_far = math.log(far_radius)
+    log_close = math.log(zoom_close)
+
     with torch.no_grad():
         for i in range(num_frames):
             t = i / (num_frames - 1)  # 0 to 1
@@ -710,8 +716,6 @@ def render_lod_zoom(
             t_zoom = 2.0 * t if t < 0.5 else 2.0 * (1.0 - t)
 
             # Interpolate distance (log-space for smooth zoom feel)
-            log_far = math.log(far_radius)
-            log_close = math.log(zoom_close)
             radius = math.exp(log_far * (1 - t_zoom) + log_close * t_zoom)
 
             # Continuous spin

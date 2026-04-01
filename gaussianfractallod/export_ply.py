@@ -65,17 +65,19 @@ def _zup_to_yup(means, quats, log_scales, sh_dc, sh_rest):
     ls_yup[:, 1] = log_scales[:, 2]
     ls_yup[:, 2] = log_scales[:, 1]
 
-    # Quaternions: component swap (confirmed working at commit 01c8b02)
-    quats_yup = quats.copy()
-    quats_yup[:, 1] = -quats[:, 1]  # negate qx
-    quats_yup[:, 2] = -quats[:, 3]  # new qy = -old qz
-    quats_yup[:, 3] = -quats[:, 2]  # new qz = -old qy
+    # Quaternions: scipy rotation, consistent with M
+    quats_xyzw = np.column_stack([quats[:, 1], quats[:, 2], quats[:, 3], quats[:, 0]])
+    rotations = Rotation.from_quat(quats_xyzw)
+    rotated = rot * rotations
+    result_xyzw = rotated.as_quat()
+    quats_yup = np.column_stack([
+        result_xyzw[:, 3], result_xyzw[:, 0],
+        result_xyzw[:, 1], result_xyzw[:, 2],
+    ]).astype(np.float32)
 
-    # SH: DC is view-independent, no change. Rotate rest bands.
+    # SH: DC is view-independent, no change. Rotate rest bands with same M.
     sh_dc_yup = sh_dc.copy()
-    # SH needs inverse rotation: view directions transform by M,
-    # so SH coefficients rotate by M^-1 to preserve color(direction).
-    sh_rest_yup = _rotate_sh(sh_rest, rot.inv()) if sh_rest.shape[1] > 0 else sh_rest.copy()
+    sh_rest_yup = _rotate_sh(sh_rest, rot) if sh_rest.shape[1] > 0 else sh_rest.copy()
 
     return means_yup, quats_yup, ls_yup, sh_dc_yup, sh_rest_yup
 

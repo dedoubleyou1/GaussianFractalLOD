@@ -73,7 +73,9 @@ def _zup_to_yup(means, quats, log_scales, sh_dc, sh_rest):
 
     # SH: DC is view-independent, no change. Rotate rest bands.
     sh_dc_yup = sh_dc.copy()
-    sh_rest_yup = _rotate_sh(sh_rest, rot) if sh_rest.shape[1] > 0 else sh_rest.copy()
+    # SH needs inverse rotation: view directions transform by M,
+    # so SH coefficients rotate by M^-1 to preserve color(direction).
+    sh_rest_yup = _rotate_sh(sh_rest, rot.inv()) if sh_rest.shape[1] > 0 else sh_rest.copy()
 
     return means_yup, quats_yup, ls_yup, sh_dc_yup, sh_rest_yup
 

@@ -267,7 +267,7 @@ def fit_roots_silhouette(
                     return_alpha=True,
                 )
                 gt_mask = gt_alpha.squeeze(-1)  # (H, W)
-                total_loss = total_loss + F.mse_loss(render_alpha, gt_mask)
+                total_loss = total_loss + F.mse_loss(render_alpha.squeeze(-1), gt_mask)
             total_loss.backward()
             return total_loss
 

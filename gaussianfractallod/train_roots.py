@@ -214,7 +214,25 @@ def fit_roots_silhouette(
     2. Color phase: freeze geometry, fit SH to match colors
     """
     import logging
+    import math
     logger = logging.getLogger(__name__)
+
+    # Start large and opaque — the optimizer shrinks to match the silhouette.
+    # Starting small gives vanishing alpha gradients (dead zone).
+    with torch.no_grad():
+        # Scale to cover entire camera orbit (object is somewhere inside)
+        cam_positions = []
+        for i in range(len(dataset)):
+            _, _, camera = dataset[i]
+            w2c = camera["viewmat"]
+            R, t = w2c[:3, :3], w2c[:3, 3]
+            cam_positions.append(-R.T @ t)
+        cam_radius = torch.stack(cam_positions).norm(dim=-1).mean()
+        large_scale = math.log(cam_radius.item() * 0.5)
+        roots.log_scales.data.fill_(large_scale)
+        # High opacity so rendered alpha starts near 1.0
+        roots.opacities.data.fill_(5.0)  # sigmoid(5) ≈ 0.993
+        logger.info(f"Silhouette init: scale={math.exp(large_scale):.2f}, opacity=0.993")
 
     # Phase 1: Silhouette — optimize position, scale, opacity only
     geom_params = [roots.means, roots.quats, roots.log_scales, roots.opacities]

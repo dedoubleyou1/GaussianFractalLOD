@@ -962,7 +962,7 @@ def run_alpha_metrics(
 
     print(f"\n{scene} (L{max_depth}, {result['num_gaussians']} G):")
     print(f"  Centroid error: mean={result['centroid_error_mean']:.2f}px, max={result['centroid_error_max']:.2f}px")
-    print(f"  Covariance error: mean={result['covariance_error_mean']:.1f}")
+    print(f"  Covariance error: mean={result['covariance_error_mean']:.1f} (relative: {result['covariance_error_rel_mean']:.1%})")
     print(f"  Mass ratio: mean={result['mass_ratio_mean']:.3f} (±{result['mass_ratio_std']:.3f})")
 
     return result

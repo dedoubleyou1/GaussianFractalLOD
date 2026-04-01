@@ -77,15 +77,20 @@ def compare_alpha_moments(gt_alpha: np.ndarray, render_alpha: np.ndarray) -> dic
 
     # Covariance comparison
     if gt_moments["covariance"] is not None and render_moments["covariance"] is not None:
-        result["covariance_error"] = float(np.linalg.norm(
+        cov_diff = np.linalg.norm(
             gt_moments["covariance"] - render_moments["covariance"], ord="fro"
-        ))
-        # Also compare eigenvalues (scale match) and eigenvectors (orientation match)
+        )
+        gt_cov_mag = np.linalg.norm(gt_moments["covariance"], ord="fro")
+        result["covariance_error"] = float(cov_diff)
+        # Relative covariance error: 0 = perfect match, 1 = 100% off
+        result["covariance_error_rel"] = float(cov_diff / max(gt_cov_mag, 1e-10))
+        # Eigenvalue comparison (scale match)
         gt_eigvals = np.linalg.eigvalsh(gt_moments["covariance"])
         render_eigvals = np.linalg.eigvalsh(render_moments["covariance"])
         result["scale_ratio"] = float(np.sqrt(render_eigvals.prod() / max(gt_eigvals.prod(), 1e-10)))
     else:
         result["covariance_error"] = float("inf")
+        result["covariance_error_rel"] = float("inf")
         result["scale_ratio"] = 0.0
 
     # Mass comparison
@@ -149,6 +154,7 @@ def evaluate_alpha_moments(
     # Aggregate
     centroid_errors = [m["centroid_error"] for m in per_view if m["centroid_error"] != float("inf")]
     cov_errors = [m["covariance_error"] for m in per_view if m["covariance_error"] != float("inf")]
+    cov_errors_rel = [m["covariance_error_rel"] for m in per_view if m["covariance_error_rel"] != float("inf")]
     mass_ratios = [m["mass_ratio"] for m in per_view]
 
     summary = {
@@ -157,6 +163,7 @@ def evaluate_alpha_moments(
         "centroid_error_mean": float(np.mean(centroid_errors)) if centroid_errors else float("inf"),
         "centroid_error_max": float(np.max(centroid_errors)) if centroid_errors else float("inf"),
         "covariance_error_mean": float(np.mean(cov_errors)) if cov_errors else float("inf"),
+        "covariance_error_rel_mean": float(np.mean(cov_errors_rel)) if cov_errors_rel else float("inf"),
         "mass_ratio_mean": float(np.mean(mass_ratios)),
         "mass_ratio_std": float(np.std(mass_ratios)),
     }

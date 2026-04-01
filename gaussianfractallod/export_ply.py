@@ -50,15 +50,16 @@ def _zup_to_yup(means, quats, log_scales, sh_dc, sh_rest):
     """
     from scipy.spatial.transform import Rotation
 
-    # Rotation matrix for our coordinate transform
-    M = np.array([[-1, 0, 0], [0, 0, -1], [0, -1, 0]], dtype=np.float64)
+    # Rotation matrix: our +Z (top) → viewer +Y (up), our +Y (front) → viewer +Z (forward)
+    # (x, y, z) → (-x, z, y), det = +1
+    M = np.array([[-1, 0, 0], [0, 0, 1], [0, 1, 0]], dtype=np.float64)
     rot = Rotation.from_matrix(M)
 
     # Positions
     means_yup = means.copy()
     means_yup[:, 0] = -means[:, 0]
-    means_yup[:, 1] = -means[:, 2]
-    means_yup[:, 2] = -means[:, 1]
+    means_yup[:, 1] = means[:, 2]
+    means_yup[:, 2] = means[:, 1]
 
     # Log scales: swap Y↔Z
     ls_yup = log_scales.copy()

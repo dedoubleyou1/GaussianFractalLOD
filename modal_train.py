@@ -617,18 +617,19 @@ def render_lod_zoom(
     sh_degree: int = 0,
     max_levels: int = 9,
     run_name: str | None = None,
-    num_frames: int = 600,
+    num_frames: int = 1200,
     elevation_deg: float = 30.0,
     close_radius: float = 4.0,
     spins: float = 3.0,
     output_size: int = 1024,
     fps: int = 30,
 ) -> bytes:
-    """Render a zoom-in video demonstrating LOD transitions.
+    """Render a ping-pong zoom video demonstrating LOD transitions.
 
-    Camera starts far away and slowly moves closer while the model spins.
-    At each distance, renders the LOD level whose training resolution
-    matches the projected detail level at that distance.
+    Camera starts far away, zooms in to the finest LOD, then zooms back out.
+    Zoom endpoints are set so each LOD level gets equal screen time.
+    Each level is shown until the projected size reaches its training
+    resolution, then switches to the next finer level.
     """
     vol.reload()
     import torch
@@ -677,21 +678,23 @@ def render_lod_zoom(
             continue
 
     # Compute distance-to-level mapping.
-    # Each level was trained at a resolution. The "correct" viewing distance
-    # for that level is where the object projects at that resolution.
-    # distance = close_radius * (full_res / level_res)
+    # Each level's theoretical resolution follows 32 * √2^level (uncapped),
+    # even though training caps at 800px. This gives each level a unique
+    # switch distance based on where it would project at that resolution.
     full_res = 800
     level_distances = {}
     for level in range(tree.depth):
-        level_res = _get_level_resolution(level)
+        level_res = round(32.0 * (2 ** 0.5) ** level)  # uncapped
         level_distances[level] = close_radius * (full_res / level_res)
 
-    # Far distance: where level 0 is appropriate
-    far_radius = level_distances[0]
-    # Extrapolate even further for dramatic start
-    far_radius *= 1.5
+    # Set zoom endpoints so each LOD level gets equal screen time.
+    # Switch points are already equally spaced in log-space (√2 apart),
+    # so place start/end one √2 step beyond the outermost switch points.
+    sqrt2 = 2 ** 0.5
+    far_radius = level_distances[0] * sqrt2
+    zoom_close = level_distances[tree.depth - 2] / sqrt2
 
-    print(f"Distance range: {far_radius:.1f} (far) → {close_radius:.1f} (close)")
+    print(f"Distance range: {far_radius:.1f} (far) → {zoom_close:.1f} (close)")
     for level in range(tree.depth):
         print(f"  Level {level}: distance={level_distances[level]:.1f}, "
               f"res={_get_level_resolution(level)}px")
@@ -703,21 +706,23 @@ def render_lod_zoom(
         for i in range(num_frames):
             t = i / (num_frames - 1)  # 0 to 1
 
-            # Smooth ease-in-out for zoom
-            t_smooth = 0.5 * (1 - math.cos(math.pi * t))
+            # Ping-pong: zoom in for first half, zoom back out for second half
+            t_zoom = 2.0 * t if t < 0.5 else 2.0 * (1.0 - t)
 
             # Interpolate distance (log-space for smooth zoom feel)
             log_far = math.log(far_radius)
-            log_close = math.log(close_radius)
-            radius = math.exp(log_far * (1 - t_smooth) + log_close * t_smooth)
+            log_close = math.log(zoom_close)
+            radius = math.exp(log_far * (1 - t_zoom) + log_close * t_zoom)
 
             # Continuous spin
             azimuth = 2.0 * math.pi * spins * t
 
             # Pick LOD level based on current distance
+            # Each level's training resolution is its max display size;
+            # switch to the next level when the previous one reaches its limit.
             best_level = 0
-            for level in range(tree.depth):
-                if radius <= level_distances[level]:
+            for level in range(1, tree.depth):
+                if radius <= level_distances[level - 1]:
                     best_level = level
 
             # Camera position (Z-up world)

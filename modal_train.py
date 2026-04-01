@@ -901,6 +901,54 @@ def render_error_maps(
     return results
 
 
+@app.function(
+    gpu="L4",
+    timeout=600,
+    volumes={"/checkpoints": vol},
+)
+def run_alpha_metrics(
+    scene: str = "lego",
+    sh_degree: int = 0,
+    max_levels: int = 9,
+    run_name: str | None = None,
+) -> dict:
+    """Run alpha moment metrics on the highest LOD level."""
+    vol.reload()
+    import torch
+    import glob
+
+    from gaussianfractallod.checkpoint import load_checkpoint
+    from gaussianfractallod.data import NerfSyntheticDataset
+    from gaussianfractallod.metrics import evaluate_alpha_moments
+
+    suffix = run_name or f"sh{sh_degree}_l{max_levels}"
+    checkpoint_dir = f"/checkpoints/{scene}_{suffix}"
+    ckpts = sorted(glob.glob(f"{checkpoint_dir}/phase2_level_*.pt"),
+                   key=lambda p: int(p.split("_level_")[1].split(".")[0]))
+    # Fall back to phase1 if no phase2
+    if not ckpts:
+        ckpts = sorted(glob.glob(f"{checkpoint_dir}/phase1_roots.pt"))
+    if not ckpts:
+        print(f"No checkpoints found in {checkpoint_dir}")
+        return {}
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    roots, tree, meta = load_checkpoint(ckpts[-1], device=device)
+
+    dataset = NerfSyntheticDataset(f"/app/nerf_synthetic/{scene}", split="test")
+    background = torch.ones(3, device=device)
+
+    max_depth = tree.depth - 1
+    result = evaluate_alpha_moments(tree, dataset, max_depth, device, background)
+
+    print(f"\n{scene} (L{max_depth}, {result['num_gaussians']} G):")
+    print(f"  Centroid error: mean={result['centroid_error_mean']:.2f}px, max={result['centroid_error_max']:.2f}px")
+    print(f"  Covariance error: mean={result['covariance_error_mean']:.1f}")
+    print(f"  Mass ratio: mean={result['mass_ratio_mean']:.3f} (±{result['mass_ratio_std']:.3f})")
+
+    return result
+
+
 @app.local_entrypoint()
 def main(
     scene: str = "lego",
@@ -915,10 +963,19 @@ def main(
     orbit: bool = False,
     lod_zoom: bool = False,
     error_maps: bool = False,
+    alpha_metrics: bool = False,
     test_index: int = 60,
     resume: str | None = None,
     run_name: str | None = None,
 ):
+    if alpha_metrics:
+        print(f"Running alpha moment metrics for {scene}...")
+        result = run_alpha_metrics.remote(
+            scene=scene, sh_degree=sh_degree, max_levels=max_levels,
+            run_name=run_name,
+        )
+        return
+
     if error_maps:
         print(f"Rendering error heatmaps for {scene}...")
         maps = render_error_maps.remote(

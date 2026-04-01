@@ -9,7 +9,7 @@ Usage:
 
     # With config overrides:
     python trigger_train.py --run-name test2 --max-levels 12 \
-        --set reg_aspect_weight=0.003 child_opacity_scale=0.2
+        --set reg_scale_weight=0.01
 
     # Resume from checkpoint:
     python trigger_train.py --run-name test1 --max-levels 12 \

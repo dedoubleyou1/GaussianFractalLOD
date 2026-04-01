@@ -183,7 +183,6 @@ class GaussianTree(nn.Module):
     def add_level(
         self,
         cuts_per_parent: torch.Tensor | None = None,
-        child_opacity_scale: float = 1.0,
     ) -> None:
         """Add a new level with variable fan-out per parent.
 
@@ -191,7 +190,6 @@ class GaussianTree(nn.Module):
             cuts_per_parent: (N,) int tensor per parent.
                 -1 = excluded, 0 = kept, 1 = 2 children, 2 = 4, 3 = 8.
                 If None, all parents get 3 cuts (full octree).
-            child_opacity_scale: scale factor for child opacities.
         """
         assert self.depth > 0, "Must set root level first"
 
@@ -305,18 +303,6 @@ class GaussianTree(nn.Module):
 
             expected_offset = (children.means - parent_means_repeated).norm(dim=-1)
             expected_offset = expected_offset.clamp(min=1e-4)
-
-            if child_opacity_scale < 1.0:
-                alpha = torch.sigmoid(children.opacities)
-                alpha_scaled = (alpha * child_opacity_scale).clamp(min=1e-6, max=1.0 - 1e-6)
-                children = Gaussian(
-                    means=children.means,
-                    quats=children.quats,
-                    log_scales=children.log_scales,
-                    opacities=torch.log(alpha_scaled / (1.0 - alpha_scaled)),
-                    sh_dc=children.sh_dc,
-                    sh_rest=children.sh_rest,
-                )
 
         new_level = GaussianLevel(
             means=children.means.detach().clone(),

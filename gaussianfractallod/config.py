@@ -34,9 +34,6 @@ class Config:
     split_1cut_threshold: float = 0.00025 # 2 children
     split_min_opacity: float = 0.01       # don't subdivide near-transparent Gaussians
 
-    # Child opacity: multiply subdivision-derived opacity by this factor.
-    # Forces children to re-earn opacity from a low starting point (like 3DGS reset).
-    child_opacity_scale: float = 0.1
 
     # Regularization
     reg_scale_weight: float = 0.01

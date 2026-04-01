@@ -20,6 +20,12 @@ import math
 from gaussianfractallod.gaussian import Gaussian
 
 
+# Child opacity slope multiplier: scales the 0.65 base slope.
+# 1.0 = area-preserving, <1.0 = more aggressive opacity reduction.
+# 0.1 matches the previous "re-earn opacity" behavior while the
+# linear formula's 5% floor prevents the opacity death spiral.
+CHILD_OPACITY_SCALE = 0.1
+
 # Spread factor: children displaced +/-f/2 in parent's local frame per cut axis
 SPREAD_FACTOR = 1.0
 
@@ -153,9 +159,13 @@ def _binary_cut_along_axis(gaussians: Gaussian, axes) -> Gaussian:
     mu_right = gaussians.means + displacement_world
     mu_left = gaussians.means - displacement_world
 
+    # Child opacity: linear area-preserving formula with 5% floor.
+    # Matches the integrated opacity of the area-preserving (Wigner) solution
+    # while guaranteeing children start above the gradient recovery threshold.
+    # child_alpha = (parent_alpha - 0.05) * 0.65 + 0.05
     alpha_p = torch.sigmoid(gaussians.opacities)
-    alpha_c = (1.0 - torch.sqrt((1.0 - alpha_p).clamp(min=1e-8))) * (0.932 + 0.114 * f)
-    alpha_c = alpha_c.clamp(min=1e-6, max=1.0 - 1e-6)
+    alpha_c = (alpha_p - 0.05) * 0.65 * CHILD_OPACITY_SCALE + 0.05
+    alpha_c = alpha_c.clamp(max=1.0 - 1e-6)
     child_logit = torch.log(alpha_c / (1.0 - alpha_c))
 
     scale_base = math.sqrt(max(1.0 - f * f / 4.0, 0.01))

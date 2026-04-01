@@ -760,6 +760,147 @@ def render_lod_zoom(
     return buf.getvalue()
 
 
+@app.function(
+    gpu="L4",
+    timeout=600,
+    volumes={"/checkpoints": vol},
+)
+def render_error_maps(
+    scene: str = "lego",
+    sh_degree: int = 0,
+    max_levels: int = 9,
+    run_name: str | None = None,
+    num_views: int = 10,
+    output_size: int = 800,
+) -> list[tuple[str, bytes]]:
+    """Render per-pixel error heatmaps and per-view metrics for the highest LOD."""
+    vol.reload()
+    import torch
+    import glob
+    import io
+    import numpy as np
+    from PIL import Image, ImageDraw, ImageFont
+
+    from gaussianfractallod.checkpoint import load_checkpoint
+    from gaussianfractallod.data import NerfSyntheticDataset
+    from gaussianfractallod.render import render_gaussians
+
+    suffix = run_name or f"sh{sh_degree}_l{max_levels}"
+    checkpoint_dir = f"/checkpoints/{scene}_{suffix}"
+    ckpts = sorted(glob.glob(f"{checkpoint_dir}/phase2_level_*.pt"),
+                   key=lambda p: int(p.split("_level_")[1].split(".")[0]))
+    if not ckpts:
+        print(f"No checkpoints found in {checkpoint_dir}")
+        return []
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    roots, tree, meta = load_checkpoint(ckpts[-1], device=device)
+
+    dataset = NerfSyntheticDataset(f"/app/nerf_synthetic/{scene}", split="test")
+    background = torch.ones(3, device=device)
+
+    # Evenly spaced test views
+    indices = np.linspace(0, len(dataset) - 1, num_views, dtype=int)
+    max_depth = tree.depth - 1
+
+    results = []
+    per_view_metrics = []
+
+    font = None
+    for font_path in ["/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+                      "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"]:
+        try:
+            font = ImageFont.truetype(font_path, 20)
+            break
+        except (OSError, IOError):
+            continue
+
+    with torch.no_grad():
+        gaussians = tree.get_gaussians_at_depth(max_depth)
+
+        for view_idx in indices:
+            gt_rgb, gt_alpha, camera = dataset[int(view_idx)]
+            gt_rgb = gt_rgb.to(device)
+            gt_alpha = gt_alpha.to(device)
+            cam = {k: v.to(device) if isinstance(v, torch.Tensor) else v
+                   for k, v in camera.items()}
+            gt_image = (gt_rgb * gt_alpha + (1.0 - gt_alpha)).clamp(0, 1)
+
+            rendered = render_gaussians(
+                gaussians, cam["viewmat"], cam["K"],
+                cam["width"], cam["height"], background,
+            ).clamp(0, 1)
+
+            # Per-pixel L2 error
+            error = (rendered - gt_image).pow(2).sum(dim=-1).sqrt()  # (H, W)
+
+            # Per-view PSNR
+            mse = (rendered - gt_image).pow(2).mean().item()
+            psnr = -10.0 * np.log10(max(mse, 1e-10))
+
+            # Per-view SSIM (simple structural)
+            from torchmetrics.image import StructuralSimilarityIndexMeasure
+            ssim_metric = StructuralSimilarityIndexMeasure(data_range=1.0).to(device)
+            ssim = ssim_metric(
+                rendered.permute(2, 0, 1).unsqueeze(0),
+                gt_image.permute(2, 0, 1).unsqueeze(0),
+            ).item()
+
+            per_view_metrics.append({
+                'view': int(view_idx),
+                'psnr': psnr,
+                'ssim': ssim,
+                'mse': mse,
+                'max_error': error.max().item(),
+                'mean_error': error.mean().item(),
+            })
+
+            # Create side-by-side: GT | Rendered | Error heatmap
+            gt_np = (gt_image.cpu().numpy() * 255).astype(np.uint8)
+            render_np = (rendered.cpu().numpy() * 255).astype(np.uint8)
+
+            # Normalize error to 0-1 for heatmap (use consistent scale across views)
+            error_np = error.cpu().numpy()
+            error_normalized = np.clip(error_np / 0.5, 0, 1)  # saturate at 0.5 error
+
+            # Apply colormap: blue (low) → red (high)
+            heatmap = np.zeros((*error_normalized.shape, 3), dtype=np.uint8)
+            heatmap[:, :, 0] = (error_normalized * 255).astype(np.uint8)  # red
+            heatmap[:, :, 2] = ((1 - error_normalized) * 255).astype(np.uint8)  # blue
+
+            # Combine: GT | Rendered | Error
+            combined = np.concatenate([gt_np, render_np, heatmap], axis=1)
+            pil_img = Image.fromarray(combined)
+            draw = ImageDraw.Draw(pil_img)
+            w = gt_np.shape[1]
+            draw.text((10, 10), "Ground Truth", fill=(255, 255, 0), font=font)
+            draw.text((w + 10, 10), f"Rendered (PSNR={psnr:.1f})", fill=(255, 255, 0), font=font)
+            draw.text((2 * w + 10, 10), f"Error (SSIM={ssim:.3f})", fill=(255, 255, 0), font=font)
+
+            buf = io.BytesIO()
+            pil_img.save(buf, format="PNG")
+            results.append((f"error_view_{int(view_idx):03d}.png", buf.getvalue()))
+            print(f"View {int(view_idx)}: PSNR={psnr:.2f}, SSIM={ssim:.4f}, "
+                  f"mean_err={error.mean().item():.4f}, max_err={error.max().item():.4f}")
+
+    # Summary
+    psnrs = [m['psnr'] for m in per_view_metrics]
+    ssims = [m['ssim'] for m in per_view_metrics]
+    print(f"\nSummary: PSNR min={min(psnrs):.2f} max={max(psnrs):.2f} mean={np.mean(psnrs):.2f}")
+    print(f"         SSIM min={min(ssims):.4f} max={max(ssims):.4f} mean={np.mean(ssims):.4f}")
+
+    # Find worst views
+    sorted_by_psnr = sorted(per_view_metrics, key=lambda m: m['psnr'])
+    print(f"\nWorst 3 views by PSNR:")
+    for m in sorted_by_psnr[:3]:
+        print(f"  View {m['view']}: PSNR={m['psnr']:.2f}, SSIM={m['ssim']:.4f}")
+    print(f"\nBest 3 views by PSNR:")
+    for m in sorted_by_psnr[-3:]:
+        print(f"  View {m['view']}: PSNR={m['psnr']:.2f}, SSIM={m['ssim']:.4f}")
+
+    return results
+
+
 @app.local_entrypoint()
 def main(
     scene: str = "lego",
@@ -773,10 +914,28 @@ def main(
     gif: bool = False,
     orbit: bool = False,
     lod_zoom: bool = False,
+    error_maps: bool = False,
     test_index: int = 60,
     resume: str | None = None,
     run_name: str | None = None,
 ):
+    if error_maps:
+        print(f"Rendering error heatmaps for {scene}...")
+        maps = render_error_maps.remote(
+            scene=scene, sh_degree=sh_degree, max_levels=max_levels,
+            run_name=run_name,
+        )
+        import os
+        suffix = run_name or f"sh{sh_degree}_l{max_levels}"
+        out_dir = f"exports/{scene}_{suffix}/error_maps"
+        os.makedirs(out_dir, exist_ok=True)
+        for filename, png_bytes in maps:
+            path = f"{out_dir}/{filename}"
+            with open(path, "wb") as f:
+                f.write(png_bytes)
+            print(f"Saved {path}")
+        return
+
     if lod_zoom:
         print(f"Rendering LOD zoom video...")
         video_bytes = render_lod_zoom.remote(

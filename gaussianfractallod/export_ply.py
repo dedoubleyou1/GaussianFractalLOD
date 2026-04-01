@@ -71,10 +71,9 @@ def _zup_to_yup(means, quats, log_scales, sh_dc, sh_rest):
     means_yup[:, 1] = -means[:, 2]
     means_yup[:, 2] = -means[:, 1]
 
-    # Log scales: swap Y↔Z
+    # Scales unchanged — they're in the Gaussian's local frame,
+    # and the quaternion rotation handles the world-space mapping.
     ls_yup = log_scales.copy()
-    ls_yup[:, 1] = log_scales[:, 2]
-    ls_yup[:, 2] = log_scales[:, 1]
 
     # Quaternions: scipy rotation, consistent with M
     quats_xyzw = np.column_stack([quats[:, 1], quats[:, 2], quats[:, 3], quats[:, 0]])

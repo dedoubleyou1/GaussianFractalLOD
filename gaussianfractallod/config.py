@@ -14,6 +14,7 @@ class Config:
     root_convergence_window: int = 1000
     root_lbfgs: bool = False          # use L-BFGS instead of Adam for root fitting
     root_silhouette: bool = False     # use silhouette-based L-BFGS for root fitting
+    root_geometric: bool = False      # use closed-form geometric fit from image moments
 
     # Level fitting (Phase 2)
     max_levels: int = 6

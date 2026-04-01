@@ -22,6 +22,7 @@ from gaussianfractallod.data import NerfSyntheticDataset
 from gaussianfractallod.gaussian import Gaussian
 from gaussianfractallod.split_tree import GaussianTree
 from gaussianfractallod.train_roots import init_roots, train_roots_step, fit_roots_lbfgs, fit_roots_silhouette
+from gaussianfractallod.geometric_gaussian_fit import fit_gaussian_to_views
 from gaussianfractallod.render import render_gaussians
 from gaussianfractallod.loss import rendering_loss
 from gaussianfractallod.checkpoint import save_checkpoint, load_checkpoint
@@ -262,7 +263,11 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, Gaussi
         roots = init_roots(cfg.num_roots, sh_degree=sh_degree, device=device,
                            dataset=dataset_root)
 
-        if cfg.root_silhouette:
+        if cfg.root_geometric:
+            # Closed-form: derives Gaussian from image moments, no optimization
+            logger.info("Using geometric fit from image moments")
+            roots = fit_gaussian_to_views(dataset_root, device, sh_degree=sh_degree)
+        elif cfg.root_silhouette:
             # Silhouette-based: prioritizes spatial coverage over color accuracy
             logger.info("Using silhouette-based L-BFGS for root fitting")
             roots = fit_roots_silhouette(roots, dataset_root, device)

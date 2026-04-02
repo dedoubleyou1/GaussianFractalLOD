@@ -33,7 +33,7 @@ def render_gaussians(
     if _GSPLAT_AVAILABLE and device.type == "cuda":
         return _render_gsplat(gaussians, viewmat, K, width, height, background, sh_degree, return_alpha)
     else:
-        return _render_pytorch(gaussians, viewmat, K, width, height, background, sh_degree)
+        return _render_pytorch(gaussians, viewmat, K, width, height, background, sh_degree, return_alpha)
 
 
 def _render_gsplat(
@@ -92,6 +92,7 @@ def _render_pytorch(
     height: int,
     background: torch.Tensor | None = None,
     sh_degree: int | None = None,
+    return_alpha: bool = False,
 ) -> torch.Tensor:
     """Fallback: bounding-box PyTorch differentiable splatting.
 
@@ -224,4 +225,6 @@ def _render_pytorch(
 
     rendered = rendered + transmittance.unsqueeze(-1) * background.view(1, 1, 3)
 
+    if return_alpha:
+        return rendered, (1.0 - transmittance).unsqueeze(-1)
     return rendered

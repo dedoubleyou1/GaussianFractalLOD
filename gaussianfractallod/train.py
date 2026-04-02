@@ -97,6 +97,8 @@ def _train_level_step(
     active_sh_degree: int | None = None,
     gt_moments: dict | None = None,
     gt_alpha: torch.Tensor | None = None,
+    gt_alpha_hires: torch.Tensor | None = None,
+    gt_moments_hires: dict | None = None,
 ) -> torch.Tensor:
     """Single training step for a level's Gaussians.
 
@@ -134,15 +136,43 @@ def _train_level_step(
     if gt_image_hires is not None and camera_hires is not None:
         from gaussianfractallod.subdivide import subdivide_to_8
         hypothetical = subdivide_to_8(gaussians)
-        rendered_hires = render_gaussians(
+
+        need_alpha_hires = (use_moments and gt_moments_hires is not None) or (use_deficit and gt_alpha_hires is not None)
+        hires_result = render_gaussians(
             hypothetical,
             viewmat=camera_hires["viewmat"],
             K=camera_hires["K"],
             width=camera_hires["width"],
             height=camera_hires["height"],
             background=background,
+            return_alpha=need_alpha_hires,
         )
+        if need_alpha_hires:
+            rendered_hires, render_alpha_hires = hires_result
+        else:
+            rendered_hires = hires_result
+
         loss_children = rendering_loss(rendered_hires, gt_image_hires, ssim_weight=cfg.ssim_weight)
+
+        # Coverage regularization on hypothetical children
+        if use_moments and gt_moments_hires is not None:
+            from gaussianfractallod.metrics import moment_loss
+            alpha_hr_2d = render_alpha_hires.squeeze(-1)
+            centroid_hr, cov_hr = moment_loss(
+                alpha_hr_2d,
+                gt_moments_hires["centroid"], gt_moments_hires["covariance"],
+                gt_moments_hires["yy"], gt_moments_hires["xx"],
+                gt_moments_hires["diagonal"],
+            )
+            loss_children = loss_children + cfg.reg_centroid_weight * centroid_hr + cfg.reg_covariance_weight * cov_hr
+
+        if use_deficit and gt_alpha_hires is not None:
+            from gaussianfractallod.metrics import deficit_sdf_loss
+            alpha_hr_2d = render_alpha_hires.squeeze(-1)
+            gt_alpha_hr_2d = gt_alpha_hires.squeeze(-1)
+            deficit_hr = deficit_sdf_loss(alpha_hr_2d, gt_alpha_hr_2d)
+            loss_children = loss_children + cfg.reg_deficit_weight * deficit_hr
+
         loss = loss + loss_children
 
     # Regularization (delta parameterization: deltas are the parameters directly)
@@ -519,8 +549,34 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, Gaussi
 
         # Load higher-res dataset for hypothetical children rendering
         dataset_hires = None
+        gt_moments_hires_cache = None
         if current_level < cfg.max_levels:
             dataset_hires = _load_dataset_for_level(cfg, current_level + 1)
+
+            # Precompute hires moments for coverage reg on hypothetical children
+            if cfg.reg_centroid_weight > 0 or cfg.reg_covariance_weight > 0:
+                from gaussianfractallod.metrics import compute_alpha_moments
+                gt_moments_hires_cache = {}
+                sample_alpha_hr = dataset_hires[0][1].numpy().squeeze(-1)
+                H_hr, W_hr = sample_alpha_hr.shape
+                diagonal_hr = math.sqrt(H_hr**2 + W_hr**2)
+                yy_hr, xx_hr = torch.meshgrid(
+                    torch.arange(H_hr, dtype=torch.float32, device=device),
+                    torch.arange(W_hr, dtype=torch.float32, device=device),
+                    indexing="ij",
+                )
+                for vi in range(num_views):
+                    _, gt_alpha_hr_vi, _ = dataset_hires[vi]
+                    alpha_hr_np = gt_alpha_hr_vi.numpy().squeeze(-1)
+                    moments_hr = compute_alpha_moments(alpha_hr_np)
+                    if moments_hr["centroid"] is not None:
+                        gt_moments_hires_cache[vi] = {
+                            "centroid": torch.tensor(moments_hr["centroid"], dtype=torch.float32, device=device),
+                            "covariance": torch.tensor(moments_hr["covariance"], dtype=torch.float32, device=device),
+                            "yy": yy_hr,
+                            "xx": xx_hr,
+                            "diagonal": diagonal_hr,
+                        }
 
         # Epoch-based iterations
         level_iters = cfg.level_epochs * num_views
@@ -564,7 +620,7 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, Gaussi
             gt_image = gt_rgb * gt_alpha + (1.0 - gt_alpha) * rand_bg.view(1, 1, 3)
 
             # Higher-res image for hypothetical children (same view, same background)
-            gt_hires, cam_hires = None, None
+            gt_hires, cam_hires, gt_alpha_hr = None, None, None
             if dataset_hires is not None:
                 gt_rgb_hr, gt_alpha_hr, cam_hires = dataset_hires[idx]
                 gt_rgb_hr = gt_rgb_hr.to(device)
@@ -580,6 +636,7 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, Gaussi
                 active_sh = min(epoch // cfg.sh_band_epochs, cfg.sh_degree)
 
             view_moments = gt_moments_cache.get(idx) if gt_moments_cache else None
+            view_moments_hr = gt_moments_hires_cache.get(idx) if gt_moments_hires_cache else None
 
             loss = _train_level_step(
                 tree, current_level,
@@ -590,6 +647,8 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, Gaussi
                 active_sh_degree=active_sh,
                 gt_moments=view_moments,
                 gt_alpha=gt_alpha if use_deficit else None,
+                gt_alpha_hires=gt_alpha_hr if (use_deficit and dataset_hires is not None) else None,
+                gt_moments_hires=view_moments_hr,
             )
 
             writer.add_scalar(f"phase2/level_{current_level}/loss", loss.item(), step)

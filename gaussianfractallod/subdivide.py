@@ -34,7 +34,7 @@ def rotate_by_quat(quats: torch.Tensor, vectors: torch.Tensor) -> torch.Tensor:
     return vectors + 2.0 * (w * uv + uuv)
 
 
-def subdivide(parents: Gaussian, num_cuts: int = 3, opacity_floor: float = 0.05) -> Gaussian:
+def subdivide(parents: Gaussian, num_cuts: int = 3, opacity_floor: float = 0.05, opacity_formula: str = "linear") -> Gaussian:
     """Subdivide each parent Gaussian into 2^num_cuts children.
 
     Applies sequential binary cuts along the longest axis (re-evaluated
@@ -52,11 +52,11 @@ def subdivide(parents: Gaussian, num_cuts: int = 3, opacity_floor: float = 0.05)
     current = parents
     for cut in range(num_cuts):
         axes = current.log_scales.argmax(dim=-1)
-        current = _binary_cut_along_axis(current, axes, opacity_floor=opacity_floor)
+        current = _binary_cut_along_axis(current, axes, opacity_floor=opacity_floor, opacity_formula=opacity_formula)
     return current
 
 
-def subdivide_variable(parents: Gaussian, cuts_per_parent: torch.Tensor, opacity_floor: float = 0.05) -> tuple[Gaussian, torch.Tensor]:
+def subdivide_variable(parents: Gaussian, cuts_per_parent: torch.Tensor, opacity_floor: float = 0.05, opacity_formula: str = "linear") -> tuple[Gaussian, torch.Tensor]:
     """Subdivide parents with a variable number of cuts each.
 
     Args:
@@ -92,7 +92,7 @@ def subdivide_variable(parents: Gaussian, cuts_per_parent: torch.Tensor, opacity
             sh_rest=parents.sh_rest[mask],
         )
 
-        tier_children = subdivide(tier_parents, num_cuts=n_cuts, opacity_floor=opacity_floor)
+        tier_children = subdivide(tier_parents, num_cuts=n_cuts, opacity_floor=opacity_floor, opacity_formula=opacity_formula)
         n_tier = tier_parents.num_gaussians
         n_children_per = 2 ** n_cuts
 
@@ -126,7 +126,7 @@ def subdivide_to_8(parents: Gaussian) -> Gaussian:
     return subdivide(parents, num_cuts=3)
 
 
-def _binary_cut_along_axis(gaussians: Gaussian, axes, opacity_floor: float = 0.05) -> Gaussian:
+def _binary_cut_along_axis(gaussians: Gaussian, axes, opacity_floor: float = 0.05, opacity_formula: str = "linear") -> Gaussian:
     """Split each Gaussian into 2 along a local axis.
 
     Args:
@@ -153,14 +153,15 @@ def _binary_cut_along_axis(gaussians: Gaussian, axes, opacity_floor: float = 0.0
     mu_right = gaussians.means + displacement_world
     mu_left = gaussians.means - displacement_world
 
-    # Child opacity: linear area-preserving formula with 5% floor.
-    # Matches the integrated opacity of the area-preserving (Wigner) solution
-    # while guaranteeing children start above the gradient recovery threshold.
-    # CHILD_OPACITY_SCALE is NOT applied here — it's a training trick applied
-    # once after all cuts are complete (in split_tree.add_level).
     alpha_p = torch.sigmoid(gaussians.opacities)
-    alpha_c = (alpha_p - opacity_floor) * 0.65 + opacity_floor
-    alpha_c = alpha_c.clamp(max=1.0 - 1e-6)
+    if opacity_formula == "classic":
+        # Original per-cut formula with compounding scale (no floor).
+        alpha_c = (1 - torch.sqrt(1 - alpha_p)) * (0.932 + 0.114 * f) * 0.1
+    else:
+        # Linear area-preserving formula with floor.
+        # Scale applied once after all cuts (in split_tree.add_level).
+        alpha_c = (alpha_p - opacity_floor) * 0.65 + opacity_floor
+    alpha_c = alpha_c.clamp(min=1e-6, max=1.0 - 1e-6)
     child_logit = torch.log(alpha_c / (1.0 - alpha_c))
 
     scale_base = math.sqrt(max(1.0 - f * f / 4.0, 0.01))

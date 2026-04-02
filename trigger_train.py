@@ -43,14 +43,17 @@ def main():
     overrides = {}
     for item in args.set:
         key, value = item.split("=", 1)
-        # Try to parse as number
-        try:
-            value = int(value)
-        except ValueError:
+        # Try to parse as bool, int, float
+        if value.lower() in ("true", "false"):
+            value = value.lower() == "true"
+        else:
             try:
-                value = float(value)
+                value = int(value)
             except ValueError:
-                pass  # keep as string
+                try:
+                    value = float(value)
+                except ValueError:
+                    pass  # keep as string
         overrides[key] = value
 
     train_fn = modal.Function.from_name(args.app_name, "train")

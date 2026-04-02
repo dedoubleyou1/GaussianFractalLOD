@@ -438,6 +438,7 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, Gaussi
                 cuts_per_parent=cuts_per_parent,
                 opacity_floor=cfg.child_opacity_floor,
                 opacity_scale=cfg.child_opacity_scale,
+                opacity_formula=cfg.child_opacity_formula,
             )
         tree = tree.to(device)
 

@@ -36,6 +36,7 @@ class Config:
     split_min_opacity: float = 0.01       # don't subdivide near-transparent Gaussians
     child_opacity_floor: float = 0.05     # minimum child opacity after subdivision
     child_opacity_scale: float = 0.1      # one-time opacity scale after subdivision (1.0=area-preserving)
+    child_opacity_formula: str = "linear" # "linear" (floor+scale-once) or "classic" (per-cut compounding)
 
 
     # Regularization

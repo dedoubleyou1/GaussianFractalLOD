@@ -185,6 +185,7 @@ class GaussianTree(nn.Module):
         cuts_per_parent: torch.Tensor | None = None,
         opacity_floor: float = 0.05,
         opacity_scale: float = 0.1,
+        opacity_formula: str = "linear",
     ) -> None:
         """Add a new level with variable fan-out per parent.
 
@@ -251,7 +252,7 @@ class GaussianTree(nn.Module):
                     sh_rest=parents.sh_rest[split_mask],
                 )
 
-                split_children, child_idx = subdivide_variable(split_parents, split_cuts, opacity_floor=opacity_floor)
+                split_children, child_idx = subdivide_variable(split_parents, split_cuts, opacity_floor=opacity_floor, opacity_formula=opacity_formula)
 
                 # Build parent_indices: map each child back to the original parent index
                 # subdivide_variable processes tiers in order (1-cut, 2-cut, 3-cut)
@@ -306,20 +307,20 @@ class GaussianTree(nn.Module):
             expected_offset = (children.means - parent_means_repeated).norm(dim=-1)
             expected_offset = expected_offset.clamp(min=1e-4)
 
-            # Apply training opacity scale once (not per-cut).
-            # Subdivision produces mass-preserving children; this scales
-            # opacity down so children must "re-earn" it during training.
-            alpha_c = torch.sigmoid(children.opacities)
-            alpha_scaled = (alpha_c - opacity_floor) * opacity_scale + opacity_floor
-            alpha_scaled = alpha_scaled.clamp(min=1e-6, max=1.0 - 1e-6)
-            children = Gaussian(
-                means=children.means,
-                quats=children.quats,
-                log_scales=children.log_scales,
-                opacities=torch.log(alpha_scaled / (1.0 - alpha_scaled)),
-                sh_dc=children.sh_dc,
-                sh_rest=children.sh_rest,
-            )
+            # For "linear" formula, apply training opacity scale once (not per-cut).
+            # For "classic", scale is already baked into per-cut formula.
+            if opacity_formula == "linear":
+                alpha_c = torch.sigmoid(children.opacities)
+                alpha_scaled = (alpha_c - opacity_floor) * opacity_scale + opacity_floor
+                alpha_scaled = alpha_scaled.clamp(min=1e-6, max=1.0 - 1e-6)
+                children = Gaussian(
+                    means=children.means,
+                    quats=children.quats,
+                    log_scales=children.log_scales,
+                    opacities=torch.log(alpha_scaled / (1.0 - alpha_scaled)),
+                    sh_dc=children.sh_dc,
+                    sh_rest=children.sh_rest,
+                )
 
         new_level = GaussianLevel(
             means=children.means.detach().clone(),

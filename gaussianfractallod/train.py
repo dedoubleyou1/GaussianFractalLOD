@@ -170,7 +170,10 @@ def _train_level_step(
         from gaussianfractallod.subdivide import subdivide_to_8
         hypothetical = subdivide_to_8(gaussians)
 
-        need_alpha_hires = (use_moments and gt_moments_hires is not None) or (use_deficit and gt_alpha_hires is not None)
+        need_alpha_hires = (
+            (gt_moments_hires is not None and (cfg.reg_centroid_weight > 0 or cfg.reg_covariance_weight > 0))
+            or (cfg.reg_deficit_weight > 0 and gt_alpha_hires is not None)
+        )
         hires_result = render_gaussians(
             hypothetical,
             viewmat=camera_hires["viewmat"],

@@ -84,6 +84,38 @@ def _normalize_quaternions(level_module) -> None:
         level_module.quats.data = F.normalize(level_module.quats.data, dim=-1)
 
 
+def _coverage_loss(
+    render_alpha: torch.Tensor,
+    gt_alpha: torch.Tensor | None,
+    gt_moments: dict | None,
+    cfg: Config,
+) -> torch.Tensor:
+    """Compute coverage regularization: covariance moments + deficit SDF.
+
+    Returns scalar loss (weighted sum of enabled terms).
+    """
+    loss = torch.tensor(0.0, device=render_alpha.device)
+    alpha_2d = render_alpha.squeeze(-1)
+
+    if gt_moments is not None and (cfg.reg_centroid_weight > 0 or cfg.reg_covariance_weight > 0):
+        from gaussianfractallod.metrics import moment_loss
+        centroid, cov = moment_loss(
+            alpha_2d,
+            gt_moments["centroid"], gt_moments["covariance"],
+            gt_moments["yy"], gt_moments["xx"],
+            gt_moments["diagonal"],
+        )
+        loss = loss + cfg.reg_centroid_weight * centroid + cfg.reg_covariance_weight * cov
+
+    if cfg.reg_deficit_weight > 0 and gt_alpha is not None:
+        from gaussianfractallod.metrics import deficit_sdf_loss
+        gt_alpha_2d = gt_alpha.squeeze(-1)
+        deficit = deficit_sdf_loss(alpha_2d, gt_alpha_2d)
+        loss = loss + cfg.reg_deficit_weight * deficit
+
+    return loss
+
+
 def _train_level_step(
     tree: GaussianTree,
     level: int,
@@ -110,9 +142,10 @@ def _train_level_step(
 
     gaussians = tree.get_level_gaussians(level)
 
-    use_moments = gt_moments is not None and (cfg.reg_centroid_weight > 0 or cfg.reg_covariance_weight > 0)
-    use_deficit = cfg.reg_deficit_weight > 0
-    need_alpha = use_moments or use_deficit
+    need_alpha = (
+        (gt_moments is not None and (cfg.reg_centroid_weight > 0 or cfg.reg_covariance_weight > 0))
+        or cfg.reg_deficit_weight > 0
+    )
 
     render_result = render_gaussians(
         gaussians,
@@ -154,24 +187,9 @@ def _train_level_step(
 
         loss_children = rendering_loss(rendered_hires, gt_image_hires, ssim_weight=cfg.ssim_weight)
 
-        # Coverage regularization on hypothetical children
-        if use_moments and gt_moments_hires is not None:
-            from gaussianfractallod.metrics import moment_loss
-            alpha_hr_2d = render_alpha_hires.squeeze(-1)
-            centroid_hr, cov_hr = moment_loss(
-                alpha_hr_2d,
-                gt_moments_hires["centroid"], gt_moments_hires["covariance"],
-                gt_moments_hires["yy"], gt_moments_hires["xx"],
-                gt_moments_hires["diagonal"],
-            )
-            loss_children = loss_children + cfg.reg_centroid_weight * centroid_hr + cfg.reg_covariance_weight * cov_hr
-
-        if use_deficit and gt_alpha_hires is not None:
-            from gaussianfractallod.metrics import deficit_sdf_loss
-            alpha_hr_2d = render_alpha_hires.squeeze(-1)
-            gt_alpha_hr_2d = gt_alpha_hires.squeeze(-1)
-            deficit_hr = deficit_sdf_loss(alpha_hr_2d, gt_alpha_hr_2d)
-            loss_children = loss_children + cfg.reg_deficit_weight * deficit_hr
+        if need_alpha_hires:
+            loss_children = loss_children + _coverage_loss(
+                render_alpha_hires, gt_alpha_hires, gt_moments_hires, cfg)
 
         loss = loss + loss_children
 
@@ -197,36 +215,17 @@ def _train_level_step(
     delta_spread = torch.clamp(spread - dead_zone, min=0.0)
     aspect_reg = torch.exp(delta_spread * delta_spread).mean()
 
-    # Moment regularization: encourage rendered silhouette to match GT shape
-    centroid_reg = torch.tensor(0.0, device=loss.device)
-    cov_reg = torch.tensor(0.0, device=loss.device)
-    if use_moments:
-        from gaussianfractallod.metrics import moment_loss
-        # render_alpha is (H, W, 1) from gsplat — squeeze channel dim only
-        alpha_2d = render_alpha.squeeze(-1)
-        centroid_reg, cov_reg = moment_loss(
-            alpha_2d,
-            gt_moments["centroid"], gt_moments["covariance"],
-            gt_moments["yy"], gt_moments["xx"],
-            gt_moments["diagonal"],
-        )
-
-    # Deficit SDF: pull rendered mass toward uncovered GT regions
-    deficit_reg = torch.tensor(0.0, device=loss.device)
-    if use_deficit and gt_alpha is not None:
-        from gaussianfractallod.metrics import deficit_sdf_loss
-        alpha_2d = render_alpha.squeeze(-1)
-        gt_alpha_2d = gt_alpha.squeeze(-1)
-        deficit_reg = deficit_sdf_loss(alpha_2d, gt_alpha_2d)
+    # Coverage regularization (covariance moments + deficit SDF)
+    coverage_reg = torch.tensor(0.0, device=loss.device)
+    if need_alpha:
+        coverage_reg = _coverage_loss(render_alpha, gt_alpha, gt_moments, cfg)
 
     total_loss = (
         loss
         + cfg.reg_scale_weight * scale_reg
         + cfg.reg_position_weight * pos_reg
         + cfg.reg_aspect_weight * aspect_reg
-        + cfg.reg_centroid_weight * centroid_reg
-        + cfg.reg_covariance_weight * cov_reg
-        + cfg.reg_deficit_weight * deficit_reg
+        + coverage_reg
     )
     total_loss.backward()
 

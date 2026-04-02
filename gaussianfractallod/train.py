@@ -84,6 +84,48 @@ def _normalize_quaternions(level_module) -> None:
         level_module.quats.data = F.normalize(level_module.quats.data, dim=-1)
 
 
+def _load_sample(dataset, idx: int, device: torch.device):
+    """Load a training sample, composite with random background."""
+    gt_rgb, gt_alpha, camera = dataset[idx]
+    gt_rgb = gt_rgb.to(device)
+    gt_alpha = gt_alpha.to(device)
+    camera = {k: v.to(device) if isinstance(v, torch.Tensor) else v
+              for k, v in camera.items()}
+    rand_bg = torch.rand(3, device=device)
+    gt_image = gt_rgb * gt_alpha + (1.0 - gt_alpha) * rand_bg.view(1, 1, 3)
+    return gt_image, gt_alpha, camera, rand_bg
+
+
+def _precompute_moments(dataset, cfg: Config, device: torch.device):
+    """Precompute GT alpha moments for all views in a dataset."""
+    if cfg.reg_centroid_weight <= 0 and cfg.reg_covariance_weight <= 0:
+        return None
+    from gaussianfractallod.metrics import compute_alpha_moments
+    cache = {}
+    sample_alpha = dataset[0][1].numpy().squeeze(-1)
+    H, W = sample_alpha.shape
+    diagonal = math.sqrt(H**2 + W**2)
+    yy, xx = torch.meshgrid(
+        torch.arange(H, dtype=torch.float32, device=device),
+        torch.arange(W, dtype=torch.float32, device=device),
+        indexing="ij",
+    )
+    for vi in range(len(dataset)):
+        _, gt_alpha_vi, _ = dataset[vi]
+        alpha_np = gt_alpha_vi.numpy().squeeze(-1)
+        moments = compute_alpha_moments(alpha_np)
+        if moments["centroid"] is not None:
+            cache[vi] = {
+                "centroid": torch.tensor(moments["centroid"], dtype=torch.float32, device=device),
+                "covariance": torch.tensor(moments["covariance"], dtype=torch.float32, device=device),
+                "yy": yy,
+                "xx": xx,
+                "diagonal": diagonal,
+            }
+    logger.info(f"Precomputed GT moments for {len(cache)}/{len(dataset)} views ({H}x{W})")
+    return cache
+
+
 def _coverage_loss(
     render_alpha: torch.Tensor,
     gt_alpha: torch.Tensor | None,
@@ -348,14 +390,7 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, Gaussi
 
             for step in range(cfg.root_iterations):
                 idx = random.randint(0, len(dataset_root) - 1)
-                gt_rgb, gt_alpha, camera = dataset_root[idx]
-                gt_rgb = gt_rgb.to(device)
-                gt_alpha = gt_alpha.to(device)
-                camera = {k: v.to(device) if isinstance(v, torch.Tensor) else v
-                          for k, v in camera.items()}
-
-                rand_bg = torch.rand(3, device=device)
-                gt_image = gt_rgb * gt_alpha + (1.0 - gt_alpha) * rand_bg.view(1, 1, 3)
+                gt_image, gt_alpha, camera, rand_bg = _load_sample(dataset_root, idx, device)
 
                 loss = train_roots_step(
                     roots, gt_image, camera, sh_optimizer,
@@ -390,14 +425,7 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, Gaussi
 
             for step in range(cfg.root_iterations):
                 idx = random.randint(0, len(dataset_root) - 1)
-                gt_rgb, gt_alpha, camera = dataset_root[idx]
-                gt_rgb = gt_rgb.to(device)
-                gt_alpha = gt_alpha.to(device)
-                camera = {k: v.to(device) if isinstance(v, torch.Tensor) else v
-                          for k, v in camera.items()}
-
-                rand_bg = torch.rand(3, device=device)
-                gt_image = gt_rgb * gt_alpha + (1.0 - gt_alpha) * rand_bg.view(1, 1, 3)
+                gt_image, gt_alpha, camera, rand_bg = _load_sample(dataset_root, idx, device)
 
                 loss = train_roots_step(
                     roots, gt_image, camera, optimizer,
@@ -519,33 +547,7 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, Gaussi
         dataset = _load_dataset_for_level(cfg, current_level)
         num_views = len(dataset)
 
-        # Precompute GT alpha moments for silhouette regularization
-        gt_moments_cache = None
-        if cfg.reg_centroid_weight > 0 or cfg.reg_covariance_weight > 0:
-            from gaussianfractallod.metrics import compute_alpha_moments
-            gt_moments_cache = {}
-            # Coordinate grids shared across views (same resolution per level)
-            sample_alpha = dataset[0][1].numpy().squeeze(-1)
-            H, W = sample_alpha.shape
-            diagonal = math.sqrt(H**2 + W**2)
-            yy, xx = torch.meshgrid(
-                torch.arange(H, dtype=torch.float32, device=device),
-                torch.arange(W, dtype=torch.float32, device=device),
-                indexing="ij",
-            )
-            for vi in range(num_views):
-                _, gt_alpha_vi, _ = dataset[vi]
-                alpha_np = gt_alpha_vi.numpy().squeeze(-1)
-                moments = compute_alpha_moments(alpha_np)
-                if moments["centroid"] is not None:
-                    gt_moments_cache[vi] = {
-                        "centroid": torch.tensor(moments["centroid"], dtype=torch.float32, device=device),
-                        "covariance": torch.tensor(moments["covariance"], dtype=torch.float32, device=device),
-                        "yy": yy,
-                        "xx": xx,
-                        "diagonal": diagonal,
-                    }
-            logger.info(f"Precomputed GT moments for {len(gt_moments_cache)}/{num_views} views")
+        gt_moments_cache = _precompute_moments(dataset, cfg, device)
 
         use_deficit = cfg.reg_deficit_weight > 0
 
@@ -555,30 +557,7 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, Gaussi
         if current_level < cfg.max_levels:
             dataset_hires = _load_dataset_for_level(cfg, current_level + 1)
 
-            # Precompute hires moments for coverage reg on hypothetical children
-            if cfg.reg_centroid_weight > 0 or cfg.reg_covariance_weight > 0:
-                from gaussianfractallod.metrics import compute_alpha_moments
-                gt_moments_hires_cache = {}
-                sample_alpha_hr = dataset_hires[0][1].numpy().squeeze(-1)
-                H_hr, W_hr = sample_alpha_hr.shape
-                diagonal_hr = math.sqrt(H_hr**2 + W_hr**2)
-                yy_hr, xx_hr = torch.meshgrid(
-                    torch.arange(H_hr, dtype=torch.float32, device=device),
-                    torch.arange(W_hr, dtype=torch.float32, device=device),
-                    indexing="ij",
-                )
-                for vi in range(num_views):
-                    _, gt_alpha_hr_vi, _ = dataset_hires[vi]
-                    alpha_hr_np = gt_alpha_hr_vi.numpy().squeeze(-1)
-                    moments_hr = compute_alpha_moments(alpha_hr_np)
-                    if moments_hr["centroid"] is not None:
-                        gt_moments_hires_cache[vi] = {
-                            "centroid": torch.tensor(moments_hr["centroid"], dtype=torch.float32, device=device),
-                            "covariance": torch.tensor(moments_hr["covariance"], dtype=torch.float32, device=device),
-                            "yy": yy_hr,
-                            "xx": xx_hr,
-                            "diagonal": diagonal_hr,
-                        }
+            gt_moments_hires_cache = _precompute_moments(dataset_hires, cfg, device)
 
         # Epoch-based iterations
         level_iters = cfg.level_epochs * num_views
@@ -609,19 +588,9 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, Gaussi
             _update_position_lr(optimizer, pos_lr)
 
             idx = random.randint(0, num_views - 1)
-            gt_rgb, gt_alpha, camera = dataset[idx]
-            gt_rgb = gt_rgb.to(device)
-            gt_alpha = gt_alpha.to(device)
-            camera = {k: v.to(device) if isinstance(v, torch.Tensor) else v
-                      for k, v in camera.items()}
+            gt_image, gt_alpha, camera, rand_bg = _load_sample(dataset, idx, device)
 
-            # Random background forces proper opacity learning:
-            # renderer fills transparent regions with rand_bg, GT composited
-            # with same rand_bg, so the only way to match is correct opacity
-            rand_bg = torch.rand(3, device=device)
-            gt_image = gt_rgb * gt_alpha + (1.0 - gt_alpha) * rand_bg.view(1, 1, 3)
-
-            # Higher-res image for hypothetical children (same view, same background)
+            # Higher-res image for hypothetical children (same view, same rand_bg)
             gt_hires, cam_hires, gt_alpha_hr = None, None, None
             if dataset_hires is not None:
                 gt_rgb_hr, gt_alpha_hr, cam_hires = dataset_hires[idx]

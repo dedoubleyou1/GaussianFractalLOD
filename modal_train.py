@@ -21,7 +21,7 @@ image = (
                  index_url="https://download.pytorch.org/whl/cu121")
     .pip_install("torchmetrics", "lpips", "tensorboard", "numpy", "Pillow",
                  "pyyaml", "huggingface_hub", "ninja", "imageio[ffmpeg]",
-                 "scipy<1.15", "sphecerix", "matplotlib")
+                 "scipy<1.15", "sphecerix", "matplotlib", "kornia")
     .pip_install("gsplat==1.4.0")
     .add_local_dir("gaussianfractallod", remote_path="/app/gaussianfractallod", copy=True)
     .add_local_file("setup.py", remote_path="/app/setup.py", copy=True)

@@ -96,6 +96,7 @@ def _train_level_step(
     background: torch.Tensor | None = None,
     active_sh_degree: int | None = None,
     gt_moments: dict | None = None,
+    gt_alpha: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Single training step for a level's Gaussians.
 
@@ -108,6 +109,8 @@ def _train_level_step(
     gaussians = tree.get_level_gaussians(level)
 
     use_moments = gt_moments is not None and (cfg.reg_centroid_weight > 0 or cfg.reg_covariance_weight > 0)
+    use_deficit = cfg.reg_deficit_weight > 0
+    need_alpha = use_moments or use_deficit
 
     render_result = render_gaussians(
         gaussians,
@@ -116,10 +119,10 @@ def _train_level_step(
         width=camera["width"],
         height=camera["height"],
         background=background,
-        return_alpha=use_moments,
+        return_alpha=need_alpha,
     )
 
-    if use_moments:
+    if need_alpha:
         rendered, render_alpha = render_result
     else:
         rendered = render_result
@@ -178,6 +181,14 @@ def _train_level_step(
             gt_moments["diagonal"],
         )
 
+    # Deficit SDF: pull rendered mass toward uncovered GT regions
+    deficit_reg = torch.tensor(0.0, device=loss.device)
+    if use_deficit and gt_alpha is not None:
+        from gaussianfractallod.metrics import deficit_sdf_loss
+        alpha_2d = render_alpha.squeeze()
+        gt_alpha_2d = gt_alpha.squeeze()
+        deficit_reg = deficit_sdf_loss(alpha_2d, gt_alpha_2d)
+
     total_loss = (
         loss
         + cfg.reg_scale_weight * scale_reg
@@ -185,6 +196,7 @@ def _train_level_step(
         + cfg.reg_aspect_weight * aspect_reg
         + cfg.reg_centroid_weight * centroid_reg
         + cfg.reg_covariance_weight * cov_reg
+        + cfg.reg_deficit_weight * deficit_reg
     )
     total_loss.backward()
 
@@ -503,6 +515,8 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, Gaussi
                     }
             logger.info(f"Precomputed GT moments for {len(gt_moments_cache)}/{num_views} views")
 
+        use_deficit = cfg.reg_deficit_weight > 0
+
         # Load higher-res dataset for hypothetical children rendering
         dataset_hires = None
         if current_level < cfg.max_levels:
@@ -575,6 +589,7 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, Gaussi
                 cfg=cfg, background=rand_bg,
                 active_sh_degree=active_sh,
                 gt_moments=view_moments,
+                gt_alpha=gt_alpha if use_deficit else None,
             )
 
             writer.add_scalar(f"phase2/level_{current_level}/loss", loss.item(), step)

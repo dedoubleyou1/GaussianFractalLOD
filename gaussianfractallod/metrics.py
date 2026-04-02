@@ -188,6 +188,55 @@ def moment_loss(
     return centroid_loss, cov_loss
 
 
+def deficit_sdf_loss(
+    render_alpha: torch.Tensor,
+    gt_alpha: torch.Tensor,
+    coverage_radius: int = 2,
+) -> torch.Tensor:
+    """Pull rendered mass toward uncovered GT regions using a distance field.
+
+    Computes a deficit mask (GT has coverage, no Gaussian nearby), then a
+    signed distance field from those deficit regions. The loss gently pulls
+    all rendered mass toward the nearest deficit, with 1/distance falloff.
+
+    Args:
+        render_alpha: (H, W) rendered alpha, differentiable.
+        gt_alpha: (H, W) ground truth alpha.
+        coverage_radius: dilation radius for "nearby" coverage check.
+
+    Returns:
+        Scalar loss.
+    """
+    from kornia.contrib import distance_transform
+    import torch.nn.functional as F
+
+    # Dilate rendered coverage: a pixel is "covered" if any Gaussian is within radius
+    kernel_size = 2 * coverage_radius + 1
+    render_dilated = F.max_pool2d(
+        render_alpha.detach().unsqueeze(0).unsqueeze(0),
+        kernel_size, stride=1, padding=coverage_radius,
+    ).squeeze()
+
+    # Deficit: GT has content but no Gaussian even nearby
+    deficit_mask = ((gt_alpha > 0.01) & (render_dilated == 0)).float()
+
+    # If no deficit, no loss
+    if deficit_mask.sum() < 1:
+        return torch.tensor(0.0, device=render_alpha.device)
+
+    # Distance transform: 0 inside deficit, positive = distance to nearest deficit
+    # kornia expects (B, C, H, W), 1=foreground
+    deficit_sdf = distance_transform(
+        deficit_mask.unsqueeze(0).unsqueeze(0)
+    ).squeeze()
+
+    # Pull field: 1/distance falloff — nearby Gaussians get nudged harder
+    pull_field = 1.0 / (deficit_sdf + 1.0)
+
+    # Loss: pull all rendered mass toward deficit, weighted by proximity
+    return (render_alpha * pull_field).mean()
+
+
 def evaluate_alpha_moments(
     tree,
     dataset,

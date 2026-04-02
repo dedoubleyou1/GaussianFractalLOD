@@ -42,6 +42,7 @@ class Config:
     # Regularization
     reg_centroid_weight: float = 0.0    # silhouette centroid matching (0=disabled)
     reg_covariance_weight: float = 0.0  # silhouette covariance matching (0=disabled)
+    reg_deficit_weight: float = 0.0     # deficit SDF coverage pull (0=disabled)
     reg_scale_weight: float = 0.01
     reg_position_weight: float = 0.01
     reg_aspect_weight: float = 0.001  # exp(spread²) wall beyond dead zone

@@ -134,10 +134,24 @@ def _coverage_loss(
 ) -> torch.Tensor:
     """Compute coverage regularization: covariance moments + deficit SDF.
 
+    Scaled by rendered/GT mass ratio so the loss self-attenuates when
+    opacity is low, preventing the transparency exploit (optimizer driving
+    opacity to zero to avoid covariance mismatch).
+
     Returns scalar loss (weighted sum of enabled terms).
     """
     loss = torch.tensor(0.0, device=render_alpha.device)
     alpha_2d = render_alpha.squeeze(-1)
+
+    # Mass gate: scale coverage loss by how much opacity exists.
+    # Low opacity → low coverage loss → pixel loss dominates → opacity recovers.
+    # Prevents the transparency exploit (optimizer killing opacity to avoid shape mismatch).
+    if gt_alpha is not None:
+        gt_mass = gt_alpha.squeeze(-1).sum()
+        render_mass = alpha_2d.sum()
+        mass_ratio = (render_mass / (gt_mass + 1e-8)).clamp(max=1.0)
+    else:
+        mass_ratio = torch.tensor(1.0, device=render_alpha.device)
 
     if gt_moments is not None and (cfg.reg_centroid_weight > 0 or cfg.reg_covariance_weight > 0):
         from gaussianfractallod.metrics import moment_loss
@@ -147,13 +161,13 @@ def _coverage_loss(
             gt_moments["yy"], gt_moments["xx"],
             gt_moments["diagonal"],
         )
-        loss = loss + cfg.reg_centroid_weight * centroid + cfg.reg_covariance_weight * cov
+        loss = loss + (cfg.reg_centroid_weight * centroid + cfg.reg_covariance_weight * cov) * mass_ratio
 
     if cfg.reg_deficit_weight > 0 and gt_alpha is not None:
         from gaussianfractallod.metrics import deficit_sdf_loss
         gt_alpha_2d = gt_alpha.squeeze(-1)
         deficit = deficit_sdf_loss(alpha_2d, gt_alpha_2d)
-        loss = loss + cfg.reg_deficit_weight * deficit
+        loss = loss + cfg.reg_deficit_weight * deficit * mass_ratio
 
     return loss
 
@@ -549,7 +563,7 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, Gaussi
 
         gt_moments_cache = _precompute_moments(dataset, cfg, device)
 
-        use_deficit = cfg.reg_deficit_weight > 0
+        use_coverage = (cfg.reg_deficit_weight > 0 or cfg.reg_covariance_weight > 0 or cfg.reg_centroid_weight > 0)
 
         # Load higher-res dataset for hypothetical children rendering
         dataset_hires = None
@@ -617,8 +631,8 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, Gaussi
                 cfg=cfg, background=rand_bg,
                 active_sh_degree=active_sh,
                 gt_moments=view_moments,
-                gt_alpha=gt_alpha if use_deficit else None,
-                gt_alpha_hires=gt_alpha_hr if (use_deficit and dataset_hires is not None) else None,
+                gt_alpha=gt_alpha if use_coverage else None,
+                gt_alpha_hires=gt_alpha_hr if (use_coverage and dataset_hires is not None) else None,
                 gt_moments_hires=view_moments_hr,
             )
 

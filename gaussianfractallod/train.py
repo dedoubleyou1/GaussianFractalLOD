@@ -172,8 +172,8 @@ def _train_level_step(
     cov_reg = torch.tensor(0.0, device=loss.device)
     if use_moments:
         from gaussianfractallod.metrics import moment_loss
-        # render_alpha is (H, W) from gsplat
-        alpha_2d = render_alpha.squeeze()
+        # render_alpha is (H, W, 1) from gsplat — squeeze channel dim only
+        alpha_2d = render_alpha.squeeze(-1)
         centroid_reg, cov_reg = moment_loss(
             alpha_2d,
             gt_moments["centroid"], gt_moments["covariance"],
@@ -185,8 +185,8 @@ def _train_level_step(
     deficit_reg = torch.tensor(0.0, device=loss.device)
     if use_deficit and gt_alpha is not None:
         from gaussianfractallod.metrics import deficit_sdf_loss
-        alpha_2d = render_alpha.squeeze()
-        gt_alpha_2d = gt_alpha.squeeze()
+        alpha_2d = render_alpha.squeeze(-1)
+        gt_alpha_2d = gt_alpha.squeeze(-1)
         deficit_reg = deficit_sdf_loss(alpha_2d, gt_alpha_2d)
 
     total_loss = (

@@ -215,23 +215,25 @@ def deficit_sdf_loss(
     render_dilated = F.max_pool2d(
         render_alpha.detach().unsqueeze(0).unsqueeze(0),
         kernel_size, stride=1, padding=coverage_radius,
-    ).squeeze()
+    ).squeeze(0).squeeze(0)
 
     # Deficit: GT has content but no Gaussian even nearby
     deficit_mask = ((gt_alpha > 0.01) & (render_dilated == 0)).float()
 
     # If no deficit, no loss
     if deficit_mask.sum() < 1:
-        return torch.tensor(0.0, device=render_alpha.device)
+        return render_alpha.sum() * 0.0  # differentiable zero
 
-    # Distance transform: 0 inside deficit, positive = distance to nearest deficit
-    # kornia expects (B, C, H, W), 1=foreground
-    deficit_sdf = distance_transform(
-        deficit_mask.unsqueeze(0).unsqueeze(0)
-    ).squeeze()
+    # Distance from each pixel to nearest deficit region.
+    # kornia distance_transform gives distance to nearest foreground (1) pixel,
+    # so we pass the inverted mask: non-deficit=1, deficit=0.
+    # Result: 0 at deficit boundary, positive moving away from deficit.
+    dist_to_deficit = distance_transform(
+        (1.0 - deficit_mask).unsqueeze(0).unsqueeze(0)
+    ).squeeze(0).squeeze(0)
 
-    # Pull field: 1/distance falloff — nearby Gaussians get nudged harder
-    pull_field = 1.0 / (deficit_sdf + 1.0)
+    # Pull field: 1/distance falloff — Gaussians near deficit get nudged harder
+    pull_field = 1.0 / (dist_to_deficit + 1.0)
 
     # Loss: pull all rendered mass toward deficit, weighted by proximity
     return (render_alpha * pull_field).mean()

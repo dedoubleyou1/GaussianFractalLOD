@@ -14,7 +14,7 @@ class Config:
     root_convergence_window: int = 1000
     root_lbfgs: bool = False          # use L-BFGS instead of Adam for root fitting
     root_silhouette: bool = False     # use silhouette-based L-BFGS for root fitting
-    root_geometric: bool = False      # use closed-form geometric fit from image moments
+    root_geometric: bool = True       # use closed-form geometric fit from image moments
 
     # Level fitting (Phase 2)
     max_levels: int = 6
@@ -33,7 +33,7 @@ class Config:
     split_3cut_threshold: float = 0.004   # 8 children (full octree)
     split_2cut_threshold: float = 0.001   # 4 children
     split_1cut_threshold: float = 0.00025 # 2 children
-    split_min_opacity: float = 0.01       # don't subdivide near-transparent Gaussians
+    split_min_opacity: float = 0.05       # don't subdivide near-transparent Gaussians
     child_opacity_floor: float = 0.05     # minimum child opacity after subdivision
     child_opacity_scale: float = 0.1      # one-time opacity scale after subdivision (1.0=area-preserving)
     child_opacity_formula: str = "linear" # "linear" (floor+scale-once) or "classic" (per-cut compounding)

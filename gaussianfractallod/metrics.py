@@ -232,8 +232,15 @@ def deficit_sdf_loss(
         (1.0 - deficit_mask).unsqueeze(0).unsqueeze(0)
     ).squeeze(0).squeeze(0)
 
-    # Pull field: 1/distance falloff — Gaussians near deficit get nudged harder
-    pull_field = 1.0 / (dist_to_deficit + 1.0)
+    # Normalize distance by image diagonal so falloff is resolution-independent.
+    # At 64px, diagonal~90: a pixel 10px from deficit gets d_norm~0.11
+    # At 256px, diagonal~362: a pixel 40px from deficit gets d_norm~0.11
+    H, W = render_alpha.shape
+    diagonal = (H ** 2 + W ** 2) ** 0.5
+    dist_normalized = dist_to_deficit / diagonal
+
+    # Pull field: 1/(d_norm + epsilon) — steep falloff in normalized space
+    pull_field = 1.0 / (dist_normalized + 0.01)
 
     # Loss: pull all rendered mass toward deficit, weighted by proximity
     return (render_alpha * pull_field).mean()

@@ -128,6 +128,66 @@ def compare_alpha_moments(gt_alpha: np.ndarray, render_alpha: np.ndarray) -> dic
     return result
 
 
+def compute_alpha_moments_torch(alpha: torch.Tensor, yy: torch.Tensor, xx: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """Differentiable 2D moments from a rendered alpha mask.
+
+    Args:
+        alpha: (H, W) tensor with values in [0, 1].
+        yy: (H, W) precomputed y-coordinate grid.
+        xx: (H, W) precomputed x-coordinate grid.
+
+    Returns:
+        (centroid, covariance): centroid is (2,), covariance is (2, 2).
+    """
+    total_mass = alpha.sum() + 1e-8
+
+    mean_x = (alpha * xx).sum() / total_mass
+    mean_y = (alpha * yy).sum() / total_mass
+    centroid = torch.stack([mean_x, mean_y])
+
+    dx = xx - mean_x
+    dy = yy - mean_y
+    cov_xx = (alpha * dx * dx).sum() / total_mass
+    cov_xy = (alpha * dx * dy).sum() / total_mass
+    cov_yy = (alpha * dy * dy).sum() / total_mass
+    covariance = torch.stack([torch.stack([cov_xx, cov_xy]),
+                              torch.stack([cov_xy, cov_yy])])
+
+    return centroid, covariance
+
+
+def moment_loss(
+    render_alpha: torch.Tensor,
+    gt_centroid: torch.Tensor,
+    gt_cov: torch.Tensor,
+    yy: torch.Tensor,
+    xx: torch.Tensor,
+    diagonal: float,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Compute normalized centroid and covariance losses.
+
+    Args:
+        render_alpha: (H, W) rendered alpha, differentiable.
+        gt_centroid: (2,) precomputed GT centroid.
+        gt_cov: (2, 2) precomputed GT covariance.
+        yy, xx: (H, W) coordinate grids (precomputed).
+        diagonal: image diagonal in pixels (for centroid normalization).
+
+    Returns:
+        (centroid_loss, covariance_loss): both scalar, normalized to ~0-1 range.
+    """
+    render_centroid, render_cov = compute_alpha_moments_torch(render_alpha, yy, xx)
+
+    # Centroid: L2 distance as fraction of image diagonal
+    centroid_loss = (render_centroid - gt_centroid).pow(2).sum().sqrt() / diagonal
+
+    # Covariance: relative Frobenius error
+    gt_cov_norm = gt_cov.pow(2).sum().sqrt().clamp(min=1e-6)
+    cov_loss = (render_cov - gt_cov).pow(2).sum().sqrt() / gt_cov_norm
+
+    return centroid_loss, cov_loss
+
+
 def evaluate_alpha_moments(
     tree,
     dataset,

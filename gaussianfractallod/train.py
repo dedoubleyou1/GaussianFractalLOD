@@ -95,6 +95,7 @@ def _train_level_step(
     cfg: Config,
     background: torch.Tensor | None = None,
     active_sh_degree: int | None = None,
+    gt_moments: dict | None = None,
 ) -> torch.Tensor:
     """Single training step for a level's Gaussians.
 
@@ -106,14 +107,22 @@ def _train_level_step(
 
     gaussians = tree.get_level_gaussians(level)
 
-    rendered = render_gaussians(
+    use_moments = gt_moments is not None and (cfg.reg_centroid_weight > 0 or cfg.reg_covariance_weight > 0)
+
+    render_result = render_gaussians(
         gaussians,
         viewmat=camera["viewmat"],
         K=camera["K"],
         width=camera["width"],
         height=camera["height"],
         background=background,
+        return_alpha=use_moments,
     )
+
+    if use_moments:
+        rendered, render_alpha = render_result
+    else:
+        rendered = render_result
 
     loss = rendering_loss(rendered, gt_image, ssim_weight=cfg.ssim_weight)
 
@@ -155,11 +164,27 @@ def _train_level_step(
     delta_spread = torch.clamp(spread - dead_zone, min=0.0)
     aspect_reg = torch.exp(delta_spread * delta_spread).mean()
 
+    # Moment regularization: encourage rendered silhouette to match GT shape
+    centroid_reg = torch.tensor(0.0, device=loss.device)
+    cov_reg = torch.tensor(0.0, device=loss.device)
+    if use_moments:
+        from gaussianfractallod.metrics import moment_loss
+        # render_alpha is (H, W) from gsplat
+        alpha_2d = render_alpha.squeeze()
+        centroid_reg, cov_reg = moment_loss(
+            alpha_2d,
+            gt_moments["centroid"], gt_moments["covariance"],
+            gt_moments["yy"], gt_moments["xx"],
+            gt_moments["diagonal"],
+        )
+
     total_loss = (
         loss
         + cfg.reg_scale_weight * scale_reg
         + cfg.reg_position_weight * pos_reg
         + cfg.reg_aspect_weight * aspect_reg
+        + cfg.reg_centroid_weight * centroid_reg
+        + cfg.reg_covariance_weight * cov_reg
     )
     total_loss.backward()
 
@@ -450,6 +475,34 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, Gaussi
         dataset = _load_dataset_for_level(cfg, current_level)
         num_views = len(dataset)
 
+        # Precompute GT alpha moments for silhouette regularization
+        gt_moments_cache = None
+        if cfg.reg_centroid_weight > 0 or cfg.reg_covariance_weight > 0:
+            from gaussianfractallod.metrics import compute_alpha_moments
+            gt_moments_cache = {}
+            # Coordinate grids shared across views (same resolution per level)
+            sample_alpha = dataset[0][1].numpy().squeeze(-1)
+            H, W = sample_alpha.shape
+            diagonal = math.sqrt(H**2 + W**2)
+            yy, xx = torch.meshgrid(
+                torch.arange(H, dtype=torch.float32, device=device),
+                torch.arange(W, dtype=torch.float32, device=device),
+                indexing="ij",
+            )
+            for vi in range(num_views):
+                _, gt_alpha_vi, _ = dataset[vi]
+                alpha_np = gt_alpha_vi.numpy().squeeze(-1)
+                moments = compute_alpha_moments(alpha_np)
+                if moments["centroid"] is not None:
+                    gt_moments_cache[vi] = {
+                        "centroid": torch.tensor(moments["centroid"], dtype=torch.float32, device=device),
+                        "covariance": torch.tensor(moments["covariance"], dtype=torch.float32, device=device),
+                        "yy": yy,
+                        "xx": xx,
+                        "diagonal": diagonal,
+                    }
+            logger.info(f"Precomputed GT moments for {len(gt_moments_cache)}/{num_views} views")
+
         # Load higher-res dataset for hypothetical children rendering
         dataset_hires = None
         if current_level < cfg.max_levels:
@@ -512,6 +565,8 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, Gaussi
                 epoch = step // num_views
                 active_sh = min(epoch // cfg.sh_band_epochs, cfg.sh_degree)
 
+            view_moments = gt_moments_cache.get(idx) if gt_moments_cache else None
+
             loss = _train_level_step(
                 tree, current_level,
                 gt_image, gt_hires,
@@ -519,6 +574,7 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, Gaussi
                 optimizer,
                 cfg=cfg, background=rand_bg,
                 active_sh_degree=active_sh,
+                gt_moments=view_moments,
             )
 
             writer.add_scalar(f"phase2/level_{current_level}/loss", loss.item(), step)

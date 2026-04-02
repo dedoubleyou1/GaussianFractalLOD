@@ -149,7 +149,7 @@ def _coverage_loss(
     if gt_alpha is not None:
         gt_mass = gt_alpha.squeeze(-1).sum()
         render_mass = alpha_2d.sum()
-        mass_ratio = (render_mass / (gt_mass + 1e-8)).clamp(max=1.0)
+        mass_ratio = (render_mass / (gt_mass + 1e-8)).clamp(max=1.0).detach()
     else:
         mass_ratio = torch.tensor(1.0, device=render_alpha.device)
 

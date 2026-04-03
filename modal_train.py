@@ -689,7 +689,7 @@ def render_lod_zoom(
     level_distances = {}
     for level in range(tree.depth):
         level_res = round(32.0 * (2 ** 0.5) ** level)  # uncapped
-        level_distances[level] = close_radius * (full_res / level_res)
+        level_distances[level] = close_radius * (full_res / (level_res / 2))
 
     # Set zoom endpoints so each LOD level gets equal screen time.
     # Switch points are already equally spaced in log-space (√2 apart),

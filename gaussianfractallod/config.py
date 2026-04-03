@@ -57,6 +57,7 @@ class Config:
 
     # Loss
     ssim_weight: float = 0.2
+    coverage_bias: float = 0.0           # weight opaque pixels higher (0=uniform, 0.5=1.5× at alpha=1)
 
     # Checkpointing
     checkpoint_dir: str = "checkpoints"

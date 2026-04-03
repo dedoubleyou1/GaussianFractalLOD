@@ -50,9 +50,20 @@ def ssim(pred: torch.Tensor, gt: torch.Tensor) -> torch.Tensor:
 
 
 def rendering_loss(
-    pred: torch.Tensor, gt: torch.Tensor, ssim_weight: float = 0.2
+    pred: torch.Tensor, gt: torch.Tensor, ssim_weight: float = 0.2,
+    alpha_weight: torch.Tensor | None = None, coverage_bias: float = 0.0,
 ) -> torch.Tensor:
-    """Combined L1 + SSIM loss."""
-    l1 = F.l1_loss(pred, gt)
+    """Combined L1 + SSIM loss.
+
+    Args:
+        alpha_weight: (H, W, 1) GT alpha. When provided with coverage_bias > 0,
+            opaque pixels get higher weight: w = 1 + bias * alpha.
+        coverage_bias: strength of the opaque-pixel bias (0 = uniform).
+    """
+    if coverage_bias > 0 and alpha_weight is not None:
+        weight = 1.0 + coverage_bias * alpha_weight
+        l1 = (weight * (pred - gt).abs()).mean()
+    else:
+        l1 = F.l1_loss(pred, gt)
     ssim_val = ssim(pred, gt)
     return (1.0 - ssim_weight) * l1 + ssim_weight * (1.0 - ssim_val)

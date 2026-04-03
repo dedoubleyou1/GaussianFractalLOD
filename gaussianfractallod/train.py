@@ -218,7 +218,8 @@ def _train_level_step(
     else:
         rendered = render_result
 
-    loss = rendering_loss(rendered, gt_image, ssim_weight=cfg.ssim_weight)
+    loss = rendering_loss(rendered, gt_image, ssim_weight=cfg.ssim_weight,
+                          alpha_weight=gt_alpha, coverage_bias=cfg.coverage_bias)
 
     # Hypothetical children: subdivide on-the-fly and render at higher res
     # Gradients flow through subdivision back to parent parameters
@@ -244,7 +245,8 @@ def _train_level_step(
         else:
             rendered_hires = hires_result
 
-        loss_children = rendering_loss(rendered_hires, gt_image_hires, ssim_weight=cfg.ssim_weight)
+        loss_children = rendering_loss(rendered_hires, gt_image_hires, ssim_weight=cfg.ssim_weight,
+                                      alpha_weight=gt_alpha_hires, coverage_bias=cfg.coverage_bias)
 
         if need_alpha_hires:
             loss_children = loss_children + _coverage_loss(
@@ -559,7 +561,8 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, Gaussi
 
         gt_moments_cache = _precompute_moments(dataset, cfg, device)
 
-        use_coverage = (cfg.reg_deficit_weight > 0 or cfg.reg_covariance_weight > 0 or cfg.reg_centroid_weight > 0)
+        use_coverage = (cfg.reg_deficit_weight > 0 or cfg.reg_covariance_weight > 0
+                        or cfg.reg_centroid_weight > 0 or cfg.coverage_bias > 0)
 
         # Load higher-res dataset for hypothetical children rendering
         dataset_hires = None

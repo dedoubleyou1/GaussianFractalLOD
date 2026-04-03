@@ -309,28 +309,29 @@ class GaussianTree(nn.Module):
 
             # For "linear" formula, apply training opacity scale once (not per-cut).
             # For "classic", scale is already baked into per-cut formula.
+            # Store pre-penalty opacities as init (compression target),
+            # set delta to penalty offset so training starts at scaled value.
+            pre_penalty_opacities = children.opacities.detach().clone()
             if opacity_formula == "linear":
                 alpha_c = torch.sigmoid(children.opacities)
                 alpha_scaled = (alpha_c - opacity_floor) * opacity_scale + opacity_floor
                 alpha_scaled = alpha_scaled.clamp(min=1e-6, max=1.0 - 1e-6)
-                children = Gaussian(
-                    means=children.means,
-                    quats=children.quats,
-                    log_scales=children.log_scales,
-                    opacities=torch.log(alpha_scaled / (1.0 - alpha_scaled)),
-                    sh_dc=children.sh_dc,
-                    sh_rest=children.sh_rest,
-                )
+                post_penalty_opacities = torch.log(alpha_scaled / (1.0 - alpha_scaled))
+            else:
+                post_penalty_opacities = children.opacities.detach().clone()
 
         new_level = GaussianLevel(
             means=children.means.detach().clone(),
             quats=children.quats.detach().clone(),
             log_scales=children.log_scales.detach().clone(),
-            opacities=children.opacities.detach().clone(),
+            opacities=pre_penalty_opacities,
             sh_dc=children.sh_dc.detach().clone(),
             sh_rest=children.sh_rest.detach().clone(),
             quantize_bits=self.quantize_bits,
         )
+        # Init delta to penalty offset so actual opacity = pre_penalty + delta = post_penalty
+        with torch.no_grad():
+            new_level.delta_opacities.copy_(post_penalty_opacities - pre_penalty_opacities)
         new_level.register_buffer("expected_offset", expected_offset.detach().clone())
         new_level.register_buffer("parent_indices", parent_indices.detach().clone())
         new_level.register_buffer("child_index", child_indices.detach().clone())

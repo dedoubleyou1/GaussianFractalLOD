@@ -169,6 +169,13 @@ def _coverage_loss(
         deficit = deficit_sdf_loss(alpha_2d, gt_alpha_2d)
         loss = loss + cfg.reg_deficit_weight * deficit * mass_ratio
 
+    # Mass matching: penalize total alpha mass mismatch
+    if cfg.reg_mass_weight > 0 and gt_alpha is not None:
+        gt_mass = gt_alpha.squeeze(-1).sum()
+        render_mass = alpha_2d.sum()
+        mass_loss = (render_mass - gt_mass) ** 2 / (gt_mass + 1e-8)
+        loss = loss + cfg.reg_mass_weight * mass_loss
+
     return loss
 
 
@@ -201,6 +208,7 @@ def _train_level_step(
     need_alpha = (
         (gt_moments is not None and (cfg.reg_centroid_weight > 0 or cfg.reg_covariance_weight > 0))
         or cfg.reg_deficit_weight > 0
+        or cfg.reg_mass_weight > 0
     )
 
     render_result = render_gaussians(
@@ -562,7 +570,8 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, Gaussi
         gt_moments_cache = _precompute_moments(dataset, cfg, device)
 
         use_coverage = (cfg.reg_deficit_weight > 0 or cfg.reg_covariance_weight > 0
-                        or cfg.reg_centroid_weight > 0 or cfg.coverage_bias > 0)
+                        or cfg.reg_centroid_weight > 0 or cfg.reg_mass_weight > 0
+                        or cfg.coverage_bias > 0)
 
         # Load higher-res dataset for hypothetical children rendering
         dataset_hires = None

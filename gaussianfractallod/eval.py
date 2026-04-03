@@ -16,19 +16,27 @@ def evaluate(
     target_depth: int,
     device: torch.device,
     background: torch.Tensor | None = None,
+    base_resolution: int | None = None,
 ) -> dict:
     """Evaluate model on a dataset split.
 
     Args:
         tree: Gaussian tree with trained levels.
-        dataset: Evaluation dataset.
+        dataset: Evaluation dataset (used for full-res eval, or as fallback).
         target_depth: Which level to render (0 = roots).
         device: Torch device.
         background: Background color.
+        base_resolution: If set, evaluate at native training resolution
+            (base * √2^depth) instead of dataset resolution.
 
     Returns:
-        Dict with 'psnr', 'ssim', 'lpips' (mean values).
+        Dict with 'psnr', 'ssim', 'lpips', 'resolution' (mean values).
     """
+    if base_resolution is not None:
+        import math
+        res = min(round(base_resolution * (2 ** 0.5) ** target_depth), 800)
+        scale = res / 800.0
+        dataset = NerfSyntheticDataset(dataset.root, split=dataset.split, scale=scale)
     from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
     from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 
@@ -72,12 +80,16 @@ def evaluate(
             if i % 50 == 0:
                 logger.info(f"Evaluated {i+1}/{len(dataset)} views")
 
+    # Get actual eval resolution from first view
+    eval_res = dataset[0][0].shape[0]  # H dimension
+
     results = {
         "psnr": sum(psnr_values) / len(psnr_values),
         "ssim": sum(ssim_values) / len(ssim_values),
         "lpips": sum(lpips_values) / len(lpips_values),
         "num_gaussians": gaussians.num_gaussians,
         "target_depth": target_depth,
+        "resolution": eval_res,
     }
 
     logger.info(

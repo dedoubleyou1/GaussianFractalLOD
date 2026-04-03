@@ -153,6 +153,8 @@ def evaluate(
     max_levels: int = 9,
     checkpoint_path: str | None = None,
     run_name: str | None = None,
+    native_res: bool = False,
+    base_resolution: int = 32,
 ):
     vol.reload()  # Get latest checkpoints
     import torch
@@ -185,9 +187,11 @@ def evaluate(
 
     results = {}
     for depth in range(tree.depth):
-        r = do_eval(tree.to(device), test_dataset, depth, device, background)
+        r = do_eval(tree.to(device), test_dataset, depth, device, background,
+                     base_resolution=base_resolution if native_res else None)
         results[depth] = r
-        print(f"Depth {depth}: PSNR={r['psnr']:.2f}, {r['num_gaussians']} Gaussians")
+        res_str = f" @{r['resolution']}px" if 'resolution' in r else ""
+        print(f"Depth {depth}: PSNR={r['psnr']:.2f}, {r['num_gaussians']} Gaussians{res_str}")
 
     return results
 
@@ -986,6 +990,8 @@ def main(
     test_index: int = 60,
     resume: str | None = None,
     run_name: str | None = None,
+    native_res: bool = False,
+    base_resolution: int = 32,
 ):
     if alpha_metrics:
         print(f"Running alpha moment metrics for {scene}...")
@@ -1082,7 +1088,8 @@ def main(
         return
 
     if eval_only:
-        results = evaluate.remote(scene=scene, sh_degree=sh_degree, max_levels=max_levels, run_name=run_name)
+        results = evaluate.remote(scene=scene, sh_degree=sh_degree, max_levels=max_levels, run_name=run_name,
+                                  native_res=native_res, base_resolution=base_resolution)
         print("\nResults:", results)
     else:
         result = train.remote(

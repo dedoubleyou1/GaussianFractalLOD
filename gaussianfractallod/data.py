@@ -18,6 +18,7 @@ class NerfSyntheticDataset(Dataset):
 
     def __init__(self, root: str, split: str = "train", scale: float = 1.0):
         self.root = Path(root)
+        self.split = split
         self.scale = scale
 
         with open(self.root / f"transforms_{split}.json") as f:

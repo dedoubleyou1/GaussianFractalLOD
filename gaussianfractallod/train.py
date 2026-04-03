@@ -169,11 +169,11 @@ def _coverage_loss(
         deficit = deficit_sdf_loss(alpha_2d, gt_alpha_2d)
         loss = loss + cfg.reg_deficit_weight * deficit * mass_ratio
 
-    # Mass matching: penalize total alpha mass mismatch
+    # Mass matching: penalize relative alpha mass mismatch
     if cfg.reg_mass_weight > 0 and gt_alpha is not None:
         gt_mass = gt_alpha.squeeze(-1).sum()
         render_mass = alpha_2d.sum()
-        mass_loss = (render_mass - gt_mass) ** 2 / (gt_mass + 1e-8)
+        mass_loss = (render_mass / (gt_mass + 1e-8) - 1.0) ** 2
         loss = loss + cfg.reg_mass_weight * mass_loss
 
     return loss

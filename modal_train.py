@@ -980,7 +980,7 @@ def main(
     analyze: bool = False,
     gif: bool = False,
     orbit: bool = False,
-    lod_zoom: bool = False,
+    lod_zoom: str | None = None,
     error_maps: bool = False,
     alpha_metrics: bool = False,
     test_index: int = 60,
@@ -1012,8 +1012,9 @@ def main(
             print(f"Saved {path}")
         return
 
-    if lod_zoom:
-        print(f"Rendering LOD zoom video...")
+    if lod_zoom is not None:
+        video_name = lod_zoom if lod_zoom else "lod_zoom"
+        print(f"Rendering LOD zoom video ({video_name})...")
         video_bytes = render_lod_zoom.remote(
             scene=scene, sh_degree=sh_degree, max_levels=max_levels,
             run_name=run_name,
@@ -1022,7 +1023,7 @@ def main(
         suffix = run_name or f"sh{sh_degree}_l{max_levels}"
         out_dir = f"exports/{scene}_{suffix}"
         os.makedirs(out_dir, exist_ok=True)
-        path = f"{out_dir}/lod_zoom.mp4"
+        path = f"{out_dir}/{video_name}.mp4"
         with open(path, "wb") as f:
             f.write(video_bytes)
         print(f"Saved {path} ({len(video_bytes)/1024:.0f} KB)")

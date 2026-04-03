@@ -61,6 +61,9 @@ class Config:
     # Checkpointing
     checkpoint_dir: str = "checkpoints"
 
+    # Resolution
+    base_resolution: int = 32            # level 0 training resolution (grows √2× per level)
+
     # Rendering
     background_color: list = field(default_factory=lambda: [1.0, 1.0, 1.0])
 

@@ -319,22 +319,18 @@ def _train_level_step(
     return loss.detach()
 
 
-def _get_level_resolution(level: int) -> int:
-    """Training resolution for a level. Anchored from bottom (level 0 = 32px).
+def _get_level_resolution(level: int, base: int = 32) -> int:
+    """Training resolution for a level.
 
-    Growth: √2× per level (doubling pixel count). Derived from observed
-    Gaussian scale shrinkage (~0.64× per level) and minimum projection
-    target (~3σ pixels). Caps at 800px (dataset resolution).
-
-    Every even level is a power of 2: 32, 64, 128, 256, 512.
+    Growth: √2× per level (doubling pixel count). Caps at 800px.
     """
-    res = round(32.0 * (2 ** 0.5) ** level)
+    res = round(base * (2 ** 0.5) ** level)
     return min(res, 800)
 
 
 def _load_dataset_for_level(cfg: Config, level: int) -> NerfSyntheticDataset:
     """Load dataset at appropriate resolution for this level."""
-    res = _get_level_resolution(level)
+    res = _get_level_resolution(level, cfg.base_resolution)
     scale = res / 800.0
     dataset = NerfSyntheticDataset(cfg.data_dir, split="train", scale=scale)
     return dataset
@@ -379,7 +375,7 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, Gaussi
     # Phase 1: Root fitting
     # ========================
     if start_phase <= 1:
-        root_res = _get_level_resolution(0)
+        root_res = _get_level_resolution(0, cfg.base_resolution)
         dataset_root = _load_dataset_for_level(cfg, 0)
         logger.info(
             f"Phase 1: Fitting {cfg.num_roots} root Gaussians "
@@ -557,7 +553,7 @@ def train(cfg: Config, resume_from: str | None = None) -> tuple[Gaussian, Gaussi
         num_gaussians = level_module.num_gaussians
 
         # Load dataset at appropriate resolution for this level
-        level_res = _get_level_resolution(current_level)
+        level_res = _get_level_resolution(current_level, cfg.base_resolution)
         dataset = _load_dataset_for_level(cfg, current_level)
         num_views = len(dataset)
 

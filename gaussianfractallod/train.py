@@ -146,6 +146,8 @@ def _coverage_loss(
     # Mass gate: scale coverage loss by how much opacity exists.
     # Low opacity → low coverage loss → pixel loss dominates → opacity recovers.
     # Prevents the transparency exploit (optimizer killing opacity to avoid shape mismatch).
+    # Neutral at low coverage weights (e.g. cov=0.1) — acts as safety net for higher weights
+    # where the optimizer would otherwise drive opacity to zero to minimize shape error.
     if gt_alpha is not None:
         gt_mass = gt_alpha.squeeze(-1).sum()
         render_mass = alpha_2d.sum()

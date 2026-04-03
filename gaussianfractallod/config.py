@@ -46,6 +46,8 @@ class Config:
     reg_mass_weight: float = 0.0        # alpha mass matching (0=disabled)
     reg_scale_weight: float = 0.01
     reg_position_weight: float = 0.01
+    pos_reg_l1_scale: float = 1.0       # position reg scale at L1 (0=none, 1=full)
+    pos_reg_l2_scale: float = 1.0       # position reg scale at L2 (0=none, 1=full)
     reg_aspect_weight: float = 0.001  # exp(spread²) wall beyond dead zone
     aspect_dead_zone: float = 2.0  # no aspect penalty up to this ratio beyond init
     max_aspect_ratio: float = 100.0  # hard clamp ceiling

@@ -267,11 +267,16 @@ def _train_level_step(
     # Regularization (delta parameterization: deltas are the parameters directly)
     level_module = tree.levels[level]
 
-    # Position: delta drift as fraction of expected offset from parent
+    # Position: delta drift as fraction of expected offset from parent.
+    # Ramp: early levels get reduced position reg so children can migrate to content.
     if hasattr(level_module, 'expected_offset'):
         drift = level_module.delta_means.norm(dim=-1)
         normalized_drift = drift / (level_module.expected_offset + 1e-8)
         pos_reg = normalized_drift.pow(2).mean()
+        if level == 1 and cfg.pos_reg_l1_scale < 1.0:
+            pos_reg = pos_reg * cfg.pos_reg_l1_scale
+        elif level == 2 and cfg.pos_reg_l2_scale < 1.0:
+            pos_reg = pos_reg * cfg.pos_reg_l2_scale
     else:
         pos_reg = torch.tensor(0.0, device=loss.device)
 

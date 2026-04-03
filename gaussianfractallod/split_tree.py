@@ -35,6 +35,13 @@ class GaussianLevel(nn.Module):
     Quaternions are stored absolute (no delta). The actual values are
     reconstructed in get_gaussians() as init + delta.
 
+    Init buffers are deterministic from parent subdivision and could be
+    reconstructed on demand (from parent level + split_cuts + child_index).
+    They're kept as buffers during training for fast access (used by
+    get_gaussians, reset_opacity, prune, aspect clamping). For export/
+    streaming, only deltas + split metadata need to be stored — the
+    receiver reconstructs inits by re-running subdivision on the parent.
+
     When quantize_bits > 0, deltas pass through quantize-dequantize (STE)
     in the forward pass so the model trains at deployment precision.
     """

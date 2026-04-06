@@ -229,7 +229,8 @@ def _train_level_step(
         rendered = render_result
 
     loss = rendering_loss(rendered, gt_image, ssim_weight=cfg.ssim_weight,
-                          alpha_weight=gt_alpha, coverage_bias=cfg.coverage_bias)
+                          alpha_weight=gt_alpha, coverage_bias=cfg.coverage_bias,
+                          l1_weight=cfg.l1_weight, l2_weight=cfg.l2_weight)
 
     # Hypothetical children: subdivide on-the-fly and render at higher res
     # Gradients flow through subdivision back to parent parameters
@@ -256,7 +257,8 @@ def _train_level_step(
             rendered_hires = hires_result
 
         loss_children = rendering_loss(rendered_hires, gt_image_hires, ssim_weight=cfg.ssim_weight,
-                                      alpha_weight=gt_alpha_hires, coverage_bias=cfg.coverage_bias)
+                                      alpha_weight=gt_alpha_hires, coverage_bias=cfg.coverage_bias,
+                                      l1_weight=cfg.l1_weight, l2_weight=cfg.l2_weight)
 
         if need_alpha_hires:
             loss_children = loss_children + _coverage_loss(

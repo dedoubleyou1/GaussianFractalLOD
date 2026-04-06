@@ -65,6 +65,8 @@ class Config:
 
     # Loss
     ssim_weight: float = 0.2
+    l1_weight: float = 1.0               # L1 (sharper)
+    l2_weight: float = 0.0               # L2 (broader coverage, blurrier)
     coverage_bias: float = 0.0           # weight opaque pixels higher (0=uniform, 0.5=1.5× at alpha=1)
 
     # Checkpointing

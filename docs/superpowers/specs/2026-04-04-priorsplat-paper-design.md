@@ -125,14 +125,21 @@ Resolution schedule: `res_N = min(32 * sqrt(2)^N, max_res)`
   - Gaussian ellipsoid rendering at each level
   - Split pattern visualization (where the model allocates more Gaussians)
 
-### Section 5: Discussion & Future Work (~0.5 page)
+### Section 5: Limitations (~0.5 page)
+
+A dedicated section, not folded into Discussion. Honest acknowledgment of structural weaknesses of the coarse-to-fine approach.
+
+- **Coarse-coverage blind spots.** Because finer levels are derived from their coarse parent, regions where the coarse representation has insufficient coverage become blind spots — the children inherited from that parent have no mass to refine in those areas. The microphone cable in NeRF Synthetic is a concrete example: the coarse Gaussian fails to cover the cable, so no descendants exist there to refine. Thin or far-flung object structures are the structural worst case for any coarse-to-fine method where children inherit from parents.
+- **Mitigation, not solution.** Covariance regularization and silhouette moment matching push the coarse covariance toward the true silhouette covariance, which mitigates the worst cases. But these regularizers cannot fully recover detail that the coarse representation is fundamentally too small to cover. This should be motivated in the method section as well (covariance regularization isn't a generic regularizer — it exists specifically to address this failure mode).
+- **Scope:** requires alpha masks, designed for bounded objects, current SH-based appearance.
+
+### Section 6: Discussion & Future Work (~0.5 page)
 
 - ASG direction: unifying appearance lobes with spatial hierarchy (appearance lobes as seeds for child Gaussians)
 - Extension to multi-object scenes
 - Streaming applications: bandwidth-adaptive rendering from the hierarchy
-- Limitations: requires alpha masks, designed for bounded objects, current SH-based appearance
 
-### Section 6: Conclusion (~0.25 page)
+### Section 7: Conclusion (~0.25 page)
 
 Restate the core insight, summarize results, point to future directions.
 

@@ -25,7 +25,7 @@ class Config:
     lr_means_final: float = 1.6e-6  # position decays 100×
     lr_quats: float = 1e-3          # rotation quaternions
     lr_log_scales: float = 5e-3     # log-space scales
-    lr_opacities: float = 2.5e-2    # opacity — high
+    lr_opacities: float = 1e-2      # opacity — slowed to give position time to settle
     lr_sh_dc: float = 2.5e-3         # SH band 0 (DC color)
     lr_sh_rest: float = 1.25e-4       # SH bands 1-3 (view-dependent), 20× lower per 3DGS
 

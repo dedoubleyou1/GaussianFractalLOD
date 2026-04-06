@@ -12,9 +12,9 @@
 
 ## Core Insight
 
-A 3D Gaussian is a statistical approximation of the colors and occlusion coming from an approximate area of space. This summary acts as a natural prior for the next level of Gaussians within that region. Every component of the system follows from this observation:
+A 3D Gaussian can be viewed as a statistical approximation of the colors and occlusion coming from an approximate area of space. Viewed this way, a Gaussian acts as a natural prior for the next level of Gaussians within that region. Every component of the system follows from this observation:
 
-- **Initialization**: the parent prior tells children where to start, how big to be, what color to expect
+- **Initialization**: the coarse approximation seeds initial placement, scale, and appearance for the finer level
 - **Compression**: children are parameterized as deltas from the prior — only corrections are stored
 - **LOD**: render any level of the hierarchy for bandwidth-adaptive fidelity
 - **Adaptive allocation**: split where the prior is insufficient (high gradient = poor summary)
@@ -27,7 +27,7 @@ This is distinct from mechanical hierarchy approaches (Octree-GS, Scaffold-GS) t
 
 ### Abstract
 
-A 3D Gaussian is a statistical summary of the appearance and geometry of a spatial region. We show that this summary acts as a principled prior for finer-grained Gaussians within that region. We build PriorSplat, an object reconstruction method that exploits this insight: given a bounded object with known alpha masks, we compute the coarsest prior — a single Gaussian — in closed form from silhouette statistics, then recursively refine through gradient-driven subdivision. Each child Gaussian is parameterized as a delta from its parent prior, yielding a self-similar hierarchy with built-in level-of-detail, structural compression, and principled initialization at every scale.
+A 3D Gaussian can be viewed as a statistical approximation of the appearance and geometry of a spatial region. We show that this perspective yields a principled prior for finer-grained Gaussians within that region. We build PriorSplat, an object reconstruction method that exploits this insight: given a bounded object with known alpha masks, we compute the coarsest prior — a single Gaussian — in closed form from silhouette statistics, then recursively refine through gradient-driven subdivision. Each child Gaussian is parameterized as a delta from its parent prior, yielding a self-similar hierarchy with built-in level-of-detail, structural compression, and principled initialization at every scale.
 
 ### Section 1: Introduction (~1 page)
 
@@ -56,19 +56,20 @@ A 3D Gaussian is a statistical summary of the appearance and geometry of a spati
 
 **3.1 Gaussians as Statistical Priors**
 
-The conceptual foundation. A Gaussian over a spatial region encodes:
-- Position (mean): where the region is
-- Spatial extent (covariance): how large and oriented
-- Opacity (mass): how much light it blocks
+The conceptual foundation. A Gaussian is not a bounded chunk of an object — it is a soft, distributional claim about space: *there is approximately this much occlusion and this color, approximately in this area, distributed approximately like this.* We define **coverage** as the accumulated occlusion contributed by a Gaussian under alpha compositing. A Gaussian then encodes:
+
+- Position (mean): approximately where in space
+- Spatial extent (covariance): roughly how the contribution is distributed
+- Coverage (accumulated occlusion): how much it occludes
 - Appearance (SH coefficients): what it looks like from different directions
 
-When this summary is insufficient (training gradients remain high), the prior decomposes into sub-region priors. Children inherit and refine — they don't start from scratch. Delta parameterization: `child = parent_prior + learned_correction`.
+Both coarse and fine levels are soft approximations of the same underlying scene, just at different fidelities. When the coarse approximation is insufficient (training gradients remain high), it decomposes into a finer set of soft claims that together remain consistent with the coarse one. Delta parameterization (`child = coarse_init + learned_correction`) makes that consistency the default: refinement adds local variation without abandoning the coarse distributional claim.
 
 **3.2 Geometric Root Fitting (Phase 1)**
 
 For bounded objects with alpha masks, the coarsest prior (a single Gaussian for the whole object) can be computed in closed form:
 
-1. Per-view 2D Gaussian fitting from silhouette statistics (centroid, covariance, mass)
+1. Per-view 2D Gaussian fitting from silhouette statistics (centroid, covariance, coverage)
 2. 3D position via least-squares ray intersection across views
 3. 3D covariance via Voronoi-weighted averaging (corrects for camera clustering bias)
 4. Phase 1b: SH coefficient refinement on frozen geometry
@@ -149,7 +150,7 @@ Restate the core insight, summarize results, point to future directions.
 
 ## Key Equations to Present
 
-1. Gaussian as region summary: mean, covariance, opacity, appearance
+1. Gaussian as region summary: mean, covariance, coverage, appearance
 2. Delta parameterization: `theta_child = theta_init(parent) + delta`
 3. Geometric root fitting: moment computation, ray intersection, Voronoi weighting
 4. Child placement: position offset, scale correction, opacity formula

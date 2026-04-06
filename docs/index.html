@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  <!-- Primary Meta Tags -->
+  <meta name="title" content="PriorSplat: Recursive Gaussian Priors for Object Reconstruction with Built-in Level of Detail">
+  <meta name="description" content="PriorSplat treats 3D Gaussians as soft, distributional claims about space. A single closed-form Gaussian becomes a prior for finer levels, yielding a self-similar hierarchy with built-in LOD and structural compression.">
+  <meta name="keywords" content="3D Gaussian Splatting, Level of Detail, LOD, Novel View Synthesis, Hierarchical Reconstruction, Compression, Computer Graphics, Computer Vision">
+  <meta name="author" content="David Wallin">
+  <meta name="robots" content="index, follow">
+  <meta name="language" content="English">
+
+  <!-- Open Graph / Facebook -->
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="PriorSplat">
+  <meta property="og:title" content="PriorSplat: Recursive Gaussian Priors for Object Reconstruction with Built-in LOD">
+  <meta property="og:description" content="PriorSplat treats 3D Gaussians as soft, distributional claims about space. A single closed-form Gaussian becomes a prior for finer levels, yielding a self-similar hierarchy with built-in LOD and structural compression.">
+  <meta property="og:url" content="https://dedoubleyou1.github.io/GaussianFractalLOD/">
+  <meta property="og:image" content="https://dedoubleyou1.github.io/GaussianFractalLOD/static/images/social_preview.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="PriorSplat - Recursive Gaussian Priors for Object Reconstruction">
+  <meta property="article:author" content="David Wallin">
+  <meta property="article:section" content="Research">
+  <meta property="article:tag" content="3D Gaussian Splatting">
+  <meta property="article:tag" content="Level of Detail">
+
+  <!-- Twitter -->
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="PriorSplat: Recursive Gaussian Priors for Object Reconstruction with Built-in LOD">
+  <meta name="twitter:description" content="PriorSplat treats 3D Gaussians as soft, distributional claims about space. A single closed-form Gaussian becomes a prior for finer levels, yielding a self-similar hierarchy with built-in LOD and structural compression.">
+  <meta name="twitter:image" content="https://dedoubleyou1.github.io/GaussianFractalLOD/static/images/social_preview.png">
+  <meta name="twitter:image:alt" content="PriorSplat - Research Preview">
+
+  <!-- Academic/Research Specific -->
+  <meta name="citation_title" content="PriorSplat: Recursive Gaussian Priors for Object Reconstruction with Built-in Level of Detail">
+  <meta name="citation_author" content="Wallin, David">
+  <meta name="citation_publication_date" content="2026">
+
+  <!-- Additional SEO -->
+  <meta name="theme-color" content="#2563eb">
+  <meta name="msapplication-TileColor" content="#2563eb">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+
+  <!-- Preconnect for performance -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="preconnect" href="https://ajax.googleapis.com">
+  <link rel="preconnect" href="https://cdn.jsdelivr.net">
+
+
+  <title>PriorSplat: Recursive Gaussian Priors for Object Reconstruction with Built-in LOD</title>
+
+  <!-- Favicon and App Icons -->
+  <link rel="icon" type="image/x-icon" href="static/images/favicon.ico">
+  <link rel="apple-touch-icon" href="static/images/favicon.ico">
+
+  <!-- Critical CSS - Load synchronously -->
+  <link rel="stylesheet" href="static/css/bulma.min.css">
+  <link rel="stylesheet" href="static/css/index.css">
+
+  <!-- Non-critical CSS - Load asynchronously -->
+  <link rel="preload" href="static/css/bulma-carousel.min.css" as="style" onload="this.onload=null;this.rel='stylesheet'">
+  <link rel="preload" href="static/css/bulma-slider.min.css" as="style" onload="this.onload=null;this.rel='stylesheet'">
+  <link rel="preload" href="static/css/fontawesome.all.min.css" as="style" onload="this.onload=null;this.rel='stylesheet'">
+  <link rel="preload" href="https://cdn.jsdelivr.net/gh/jpswalsh/academicons@1/css/academicons.min.css" as="style" onload="this.onload=null;this.rel='stylesheet'">
+
+  <!-- Fallback for browsers that don't support preload -->
+  <noscript>
+    <link rel="stylesheet" href="static/css/bulma-carousel.min.css">
+    <link rel="stylesheet" href="static/css/bulma-slider.min.css">
+    <link rel="stylesheet" href="static/css/fontawesome.all.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/jpswalsh/academicons@1/css/academicons.min.css">
+  </noscript>
+
+  <!-- Fonts - Optimized loading -->
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+
+  <!-- Defer non-critical JavaScript -->
+  <script defer src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
+  <script defer src="static/js/fontawesome.all.min.js"></script>
+  <script defer src="static/js/bulma-carousel.min.js"></script>
+  <script defer src="static/js/bulma-slider.min.js"></script>
+  <script defer src="static/js/index.js"></script>
+
+  <!-- Structured Data for Academic Papers -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "ScholarlyArticle",
+    "headline": "PriorSplat: Recursive Gaussian Priors for Object Reconstruction with Built-in Level of Detail",
+    "description": "PriorSplat treats 3D Gaussians as soft, distributional claims about space, yielding a self-similar hierarchy with built-in LOD and structural compression.",
+    "author": [
+      {
+        "@type": "Person",
+        "name": "David Wallin"
+      }
+    ],
+    "datePublished": "2026",
+    "url": "https://dedoubleyou1.github.io/GaussianFractalLOD/",
+    "isAccessibleForFree": true,
+    "license": "https://creativecommons.org/licenses/by/4.0/",
+    "about": [
+      {
+        "@type": "Thing",
+        "name": "3D Gaussian Splatting"
+      },
+      {
+        "@type": "Thing",
+        "name": "Level of Detail"
+      },
+      {
+        "@type": "Thing",
+        "name": "Novel View Synthesis"
+      }
+    ]
+  }
+  </script>
+</head>
+<body>
+
+
+  <!-- Scroll to Top Button -->
+  <button class="scroll-to-top" onclick="scrollToTop()" title="Scroll to top" aria-label="Scroll to top">
+    <i class="fas fa-chevron-up"></i>
+  </button>
+
+  <main id="main-content">
+  <section class="hero">
+    <div class="hero-body">
+      <div class="container is-max-desktop">
+        <div class="columns is-centered">
+          <div class="column has-text-centered">
+            <h1 class="title is-1 publication-title">PriorSplat: Recursive Gaussian Priors for Object Reconstruction with Built-in Level of Detail</h1>
+            <div class="is-size-5 publication-authors">
+              <span class="author-block">
+                <a href="https://github.com/dedoubleyou1" target="_blank">David Wallin</a>
+              </span>
+            </div>
+
+            <div class="is-size-5 publication-authors">
+              <span class="author-block">arXiv Preprint, 2026</span>
+            </div>
+
+            <div class="column has-text-centered">
+              <div class="publication-links">
+                <!-- Paper PDF (placeholder until arXiv ID is assigned) -->
+                <span class="link-block">
+                  <a href="#" target="_blank"
+                  class="external-link button is-normal is-rounded is-dark">
+                  <span class="icon">
+                    <i class="fas fa-file-pdf"></i>
+                  </span>
+                  <span>Paper (coming soon)</span>
+                </a>
+              </span>
+
+              <!-- Code -->
+              <span class="link-block">
+                <a href="https://github.com/dedoubleyou1/GaussianFractalLOD" target="_blank"
+                class="external-link button is-normal is-rounded is-dark">
+                <span class="icon">
+                  <i class="fab fa-github"></i>
+                </span>
+                <span>Code</span>
+              </a>
+            </span>
+
+            <!-- arXiv placeholder -->
+            <span class="link-block">
+              <a href="#" target="_blank"
+              class="external-link button is-normal is-rounded is-dark">
+              <span class="icon">
+                <i class="ai ai-arxiv"></i>
+              </span>
+              <span>arXiv (coming soon)</span>
+            </a>
+          </span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+</section>
+
+
+<!-- Paper abstract -->
+<section class="section hero is-light">
+  <div class="container is-max-desktop">
+    <div class="columns is-centered has-text-centered">
+      <div class="column is-four-fifths">
+        <h2 class="title is-3">Abstract</h2>
+        <div class="content has-text-justified">
+          <p>
+            A 3D Gaussian can be viewed as a soft, distributional claim about a part of space:
+            an assertion that some amount of occlusion and color exists, approximately in some area,
+            distributed approximately like the Gaussian itself. We show that this perspective yields
+            a principled <em>prior</em> for finer-grained Gaussians within the same area.
+          </p>
+          <p>
+            Building on this insight, we introduce <strong>PriorSplat</strong>, an object reconstruction
+            method for bounded objects with known alpha masks. PriorSplat computes the coarsest prior
+            &mdash; a single Gaussian summarizing the entire object &mdash; in closed form from silhouette
+            statistics, then recursively refines it through gradient-driven subdivision. Each child
+            Gaussian is parameterized as a delta from its parent, yielding a self-similar hierarchy
+            with built-in level-of-detail, structural compression, and principled initialization at
+            every scale.
+          </p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+<!-- End paper abstract -->
+
+
+<!-- Method: Core Insight -->
+<section class="section">
+  <div class="container is-max-desktop">
+    <div class="columns is-centered">
+      <div class="column is-four-fifths">
+        <h2 class="title is-3">The Core Insight</h2>
+        <div class="content has-text-justified">
+          <p>
+            A 3D Gaussian is not merely a rendering primitive. It is also a <em>statistical
+            approximation</em> of the appearance and occlusion contributed by an area of space.
+            Viewed this way, a Gaussian is making a soft claim: <em>there is approximately this
+            much occlusion, of approximately this color, distributed approximately like this,
+            in approximately this area.</em> The softness is essential &mdash; a Gaussian has
+            no hard boundary, and never claims one.
+          </p>
+          <p>
+            Once we adopt this view, a natural question follows: what relationship should hold
+            between a coarse approximation of an area and a finer one of the same area? Our
+            answer is that the coarse Gaussian acts as a <strong>prior</strong> for the finer
+            set. It tells the finer level approximately where occlusion should sit, approximately
+            how it should be distributed, and approximately what color to expect. The finer level
+            does not start from scratch &mdash; it begins consistent with the coarse approximation
+            and refines from there.
+          </p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+<!-- End core insight -->
+
+
+<!-- Method: What the prior gives you -->
+<section class="section hero is-light">
+  <div class="container is-max-desktop">
+    <div class="columns is-centered">
+      <div class="column is-four-fifths">
+        <h2 class="title is-3">What the Prior Gives You</h2>
+        <div class="content has-text-justified">
+          <p>
+            This single observation drives the entire system. Because every Gaussian is already
+            a prior over its area, we get four benefits for free:
+          </p>
+          <ul>
+            <li>
+              <strong>Principled initialization at every level.</strong> The coarsest prior &mdash;
+              a single Gaussian summarizing the whole object &mdash; is computed in closed form
+              from 2D silhouette moments, with no optimization and no local minima. Each
+              subsequent level inherits its initialization from its parent through optimal
+              subdivision formulas.
+            </li>
+            <li>
+              <strong>Structural compression.</strong> Child initializations are fully determined
+              by parent parameters, so they never need to be stored. Only the deltas &mdash; the
+              corrections to the prior &mdash; are saved.
+            </li>
+            <li>
+              <strong>Built-in level of detail.</strong> The hierarchy can be rendered at any
+              depth, providing a single model that supports a continuum of fidelity-versus-cost
+              trade-offs.
+            </li>
+            <li>
+              <strong>Adaptive allocation.</strong> Where the coarse prior is sufficient, no
+              refinement is needed. Where it is insufficient &mdash; measured by training
+              gradients &mdash; the model subdivides more aggressively.
+            </li>
+          </ul>
+          <p>
+            This is in contrast to existing hierarchical Gaussian methods, which impose
+            hierarchical structure on top of Gaussians as an engineering choice rather than
+            deriving it from the statistical role Gaussians already play. Our hierarchy is not
+            an external scaffold &mdash; it is a recursive refinement of a single, consistent
+            statistical claim about the object.
+          </p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+<!-- End benefits -->
+
+
+<!-- Pipeline overview -->
+<section class="section">
+  <div class="container is-max-desktop">
+    <div class="columns is-centered">
+      <div class="column is-four-fifths">
+        <h2 class="title is-3">Pipeline</h2>
+        <div class="content has-text-justified">
+          <p>PriorSplat trains in two phases:</p>
+          <p>
+            <strong>Phase 1: Geometric root fitting.</strong> For each training view, we compute
+            the 2D moments (centroid, covariance, total coverage) of the alpha mask silhouette.
+            These moments define a 2D Gaussian per view, which we back-project into 3D via
+            least-squares ray intersection and Voronoi-weighted averaging across viewpoints. The
+            result is a single 3D Gaussian that summarizes the entire object &mdash; no iterative
+            optimization required. A brief second sub-phase then fits spherical harmonics for
+            view-dependent color on the frozen geometry.
+          </p>
+          <p>
+            <strong>Phase 2: Recursive refinement.</strong> Starting from the root, we train each
+            level of the hierarchy at a resolution appropriate to its detail
+            (<em>r<sub>N</sub> = min(32 &middot; &radic;2<sup>N</sup>, r<sub>max</sub>)</em>).
+            After each level, we inspect accumulated training gradients as a measure of where
+            the current prior is insufficient, and split Gaussians in those regions &mdash; into
+            two, four, or eight children depending on the gradient magnitude. Children are
+            parameterized as learned deltas on top of initial parameters derived from the parent
+            through optimal subdivision formulas, so they begin consistent with the parent's
+            distributional claim and refine from there.
+          </p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+<!-- End pipeline -->
+
+
+<!--BibTex citation -->
+  <section class="section" id="BibTeX">
+    <div class="container is-max-desktop content">
+      <div class="bibtex-header">
+        <h2 class="title">BibTeX</h2>
+        <button class="copy-bibtex-btn" onclick="copyBibTeX()" title="Copy BibTeX to clipboard">
+          <i class="fas fa-copy"></i>
+          <span class="copy-text">Copy</span>
+        </button>
+      </div>
+      <pre id="bibtex-code"><code>@article{wallin2026priorsplat,
+  title={PriorSplat: Recursive Gaussian Priors for Object Reconstruction with Built-in Level of Detail},
+  author={Wallin, David},
+  journal={arXiv preprint},
+  year={2026}
+}</code></pre>
+    </div>
+</section>
+<!--End BibTex citation -->
+
+
+  <footer class="footer">
+  <div class="container">
+    <div class="columns is-centered">
+      <div class="column is-8">
+        <div class="content">
+
+          <p>
+            This page was built using the <a href="https://github.com/eliahuhorwitz/Academic-project-page-template" target="_blank">Academic Project Page Template</a> which was adopted from the <a href="https://nerfies.github.io" target="_blank">Nerfies</a> project page.
+            You are free to borrow the source code of this website, we just ask that you link back to this page in the footer. <br> This website is licensed under a <a rel="license"  href="http://creativecommons.org/licenses/by-sa/4.0/" target="_blank">Creative
+            Commons Attribution-ShareAlike 4.0 International License</a>.
+          </p>
+
+        </div>
+      </div>
+    </div>
+  </div>
+</footer>
+
+  </main>
+  </body>
+  </html>

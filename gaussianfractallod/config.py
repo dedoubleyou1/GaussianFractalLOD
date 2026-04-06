@@ -39,9 +39,14 @@ class Config:
     child_opacity_formula: str = "linear" # "linear" (floor+scale-once) or "classic" (per-cut compounding)
 
 
-    # Regularization
+    # Coverage regularization (operates on rendered alpha vs GT alpha):
+    # forces rendered silhouette to match GT shape, preventing the optimizer
+    # from concentrating Gaussians on dense/high-error regions and abandoning
+    # thin or peripheral structures. Mass-gated: scales with rendered/GT mass
+    # ratio so it self-attenuates when opacity is low (preventing transparency
+    # exploit where the optimizer kills opacity to avoid shape mismatch).
     reg_centroid_weight: float = 0.0    # silhouette centroid matching (0=disabled)
-    reg_covariance_weight: float = 0.1  # silhouette covariance matching (0=disabled)
+    reg_covariance_weight: float = 0.1  # silhouette covariance matching (spread shape)
     reg_deficit_weight: float = 0.0     # deficit SDF coverage pull (0=disabled)
     reg_mass_weight: float = 0.0        # alpha mass matching (0=disabled)
     reg_scale_weight: float = 0.01

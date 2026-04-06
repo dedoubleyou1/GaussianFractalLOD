@@ -68,7 +68,9 @@ def rendering_loss(
     The pixel terms (L1 + L2) are normalized by their total weight so adjusting
     the L1/L2 mix doesn't change the loss magnitude. SSIM is added on top.
     """
-    pixel_total = max(l1_weight + l2_weight, 1e-8)
+    if l1_weight <= 0 and l2_weight <= 0:
+        raise ValueError("At least one of l1_weight or l2_weight must be > 0")
+    pixel_total = l1_weight + l2_weight
 
     if coverage_bias > 0 and alpha_weight is not None:
         weight = 1.0 + coverage_bias * alpha_weight

@@ -1,0 +1,132 @@
+\documentclass[acmtog]{acmart}
+
+%% Preprint mode — no copyright box, no conference info
+\setcopyright{none}
+\settopmatter{printacmref=false, printccs=false, printfolios=true}
+\renewcommand\footnotetextcopyrightpermission[1]{}
+\pagestyle{plain}
+
+%% Common packages
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{booktabs}
+\usepackage{subcaption}
+\usepackage{xcolor}
+
+%% Convenience commands
+\newcommand{\todo}[1]{\textcolor{red}{[TODO: #1]}}
+\newcommand{\methodname}{PriorSplat}
+
+\begin{document}
+
+\title{\methodname{}: Recursive Gaussian Priors for Object Reconstruction with Built-in Level of Detail}
+
+\author{David Wallin}
+\affiliation{%
+  \institution{}
+  \country{}
+}
+\email{}
+
+\begin{abstract}
+A 3D Gaussian can be viewed as a soft, distributional claim about a part of space: an assertion that some amount of occlusion and color exists, approximately in some area, distributed approximately like the Gaussian itself. We show that this perspective yields a principled prior for finer-grained Gaussians within the same area. Building on this insight, we introduce \methodname{}, an object reconstruction method for bounded objects with known alpha masks. \methodname{} computes the coarsest prior --- a single Gaussian summarizing the entire object --- in closed form from silhouette statistics, then recursively refines it through gradient-driven subdivision. Each child Gaussian is parameterized as a delta from its parent, yielding a self-similar hierarchy with built-in level-of-detail, structural compression, and principled initialization at every scale.
+\end{abstract}
+
+\maketitle
+
+%% =====================================================================
+\section{Introduction}
+%% =====================================================================
+
+3D Gaussian Splatting~\cite{kerbl3Dgaussians} has rapidly become the dominant representation for novel-view synthesis, combining real-time rendering with quality competitive with neural radiance fields. Yet despite its success, the standard formulation treats a scene as a flat, unstructured cloud of Gaussian primitives. There is no hierarchy, no native notion of level of detail, and no inherent compression structure. Initialization typically depends on a Structure-from-Motion point cloud, and density control is governed by heuristic split-and-clone rules applied uniformly across the scene.
+
+We argue that this flatness leaves something on the table. A 3D Gaussian is not merely a rendering primitive --- it is also a \emph{statistical approximation} of the appearance and occlusion contributed by a part of space. Viewed this way, a Gaussian is making a soft, distributional claim: \emph{there is approximately this much occlusion, of approximately this color, distributed approximately like this, in approximately this area.} The softness is essential. A Gaussian has no hard boundary, and never claims one; it commits only to a smooth approximation of the underlying scene.
+
+Once we adopt this view, a natural question follows. If a single Gaussian is an approximation of an area of space, what relationship should hold between a coarse approximation and a finer one of the same area? Our answer is that the coarse Gaussian acts as a \emph{prior} for the finer set: it tells the finer level approximately where mass should sit, approximately how it should be distributed, and approximately what color to expect. The finer level does not start from scratch; it begins consistent with the coarse approximation and refines from there.
+
+This single observation drives the entire system we propose. \methodname{} is an object reconstruction method --- restricted, importantly, to bounded objects with clearly defined silhouettes via alpha masks --- that exploits the prior structure of Gaussians at every step:
+
+\begin{itemize}
+    \item \textbf{Initialization} comes for free at every level. The coarsest prior, a single Gaussian summarizing the whole object, is computed in closed form from 2D silhouette moments --- no optimization, no local minima. Each subsequent level inherits its initialization from its parent through optimal subdivision formulas.
+    \item \textbf{Compression} is structural rather than post-hoc. Because child initializations are fully determined by parent parameters, they need never be stored. Only the deltas --- the corrections to the prior --- need to be saved.
+    \item \textbf{Level of detail} is built into the representation. The hierarchy can be rendered at any depth, providing a single model that supports a continuum of fidelity-versus-cost trade-offs.
+    \item \textbf{Adaptive allocation} is principled. Where the coarse prior is sufficient, no refinement is needed; where it is insufficient (measured by training gradients), the model subdivides more aggressively.
+\end{itemize}
+
+This is in contrast to existing hierarchical Gaussian methods such as Octree-GS~\cite{octreegs} and Scaffold-GS~\cite{scaffoldgs}, which impose hierarchical structure on top of Gaussians as an engineering choice rather than deriving it from the statistical role Gaussians already play. Our hierarchy is not an external scaffold; it is a recursive refinement of a single, consistent statistical claim about the object.
+
+We demonstrate \methodname{} on the NeRF Synthetic benchmark, where each object has clean alpha masks. The method achieves competitive image quality, produces a usable LOD hierarchy from a single training run, and compresses substantially below flat 3DGS through structural delta storage.
+
+\paragraph{Contributions.} Our main contributions are:
+\begin{enumerate}
+    \item A framing of 3D Gaussians as recursive statistical priors for hierarchical object reconstruction, and a complete training system that exploits this framing.
+    \item A closed-form geometric root-fitting procedure that constructs the coarsest prior directly from 2D alpha-mask silhouette moments, with no iterative optimization.
+    \item A gradient-driven adaptive subdivision scheme with optimal child placement formulas that preserves the parent's distributional claim while introducing local refinement.
+    \item Delta parameterization of children with respect to their parent, enabling structural compression without a separate post-processing stage.
+    \item A multi-resolution training schedule in which each level of the hierarchy is trained at the resolution where its detail is meaningful.
+\end{enumerate}
+
+%% =====================================================================
+\section{Related Work}
+%% =====================================================================
+
+\todo{3D Gaussian Splatting --- foundational method, properties, limitations}
+
+\todo{Hierarchical and LOD approaches --- Octree-GS, Scaffold-GS; mechanical hierarchy vs. our prior-based view}
+
+\todo{Compression methods --- CompGS, ContextGS, PCGS; post-hoc vs. structural}
+
+\todo{Object reconstruction with masks --- relationship to NeRF-based object methods}
+
+\todo{Initialization strategies --- SfM-dependent vs. closed-form silhouette-based}
+
+%% =====================================================================
+\section{Method}
+%% =====================================================================
+
+\subsection{Gaussians as Statistical Priors}
+
+\todo{Develop the conceptual foundation. Define coverage as accumulated occlusion under alpha compositing. Establish that both coarse and fine levels are soft approximations of the same scene at different fidelities. Motivate delta parameterization as preserving consistency between levels.}
+
+\subsection{Geometric Root Fitting}
+
+\todo{Phase 1. Closed-form fitting from 2D silhouette moments: per-view 2D Gaussian fit, ray intersection for 3D position, Voronoi-weighted 3D covariance. Phase 1b: SH coefficient refinement on frozen geometry. Properties: no local minima, guaranteed silhouette coverage, dependence on alpha mask boundary.}
+
+\subsection{Adaptive Subdivision}
+
+\todo{Phase 2. Gradient magnitude as a measure of prior insufficiency. Tiered splitting (2/4/8 children). Sequential binary cuts along longest axis. Optimal child placement formulas for position, scale, and coverage.}
+
+\subsection{Multi-Resolution Training}
+
+\todo{Resolution schedule $r_N = \min(32 \cdot \sqrt{2}^N, r_{\max})$. Per-level training. Learning rate schedule. Regularization terms (position drift, scale, aspect ratio).}
+
+\subsection{Structural Compression}
+
+\todo{Child initialization is reconstructible from parent --- only deltas need storage. Quantization-aware training via straight-through estimator. Bytes per Gaussian compared to flat baselines.}
+
+%% =====================================================================
+\section{Results}
+%% =====================================================================
+
+\todo{NeRF Synthetic benchmark. PSNR / SSIM / LPIPS. Per-level quality progression. LOD demonstration. Compression comparison. Ablations.}
+
+%% =====================================================================
+\section{Discussion and Future Work}
+%% =====================================================================
+
+\todo{ASG direction. Multi-object extension. Streaming applications. Limitations: requires masks, bounded objects, current SH-based appearance.}
+
+%% =====================================================================
+\section{Conclusion}
+%% =====================================================================
+
+\todo{Restate core insight, summarize results, point to future directions.}
+
+%% =====================================================================
+%% Bibliography
+%% =====================================================================
+\bibliographystyle{ACM-Reference-Format}
+\bibliography{references}
+
+\end{document}

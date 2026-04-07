@@ -106,7 +106,10 @@ Resolution schedule: `res_N = min(32 * sqrt(2)^N, max_res)`
 
 - Child initialization is fully determined by parent parameters and split decisions — never stored
 - Only deltas (corrections to the prior) need storage
-- Optional quantization-aware training via straight-through estimator (8-16 bit)
+- Quantization-aware training via straight-through estimator (typically 12 bits per scalar)
+- **Why aggressive quantization works here:** two compounding effects.
+  1. *Bounded values.* Deltas have a known, tight range, so per-attribute per-level quantization scales are well-conditioned and no bits are wasted on outliers.
+  2. *Multi-level accumulation.* The actual parameter at the finest level is the sum of contributions from all levels above it (root + δ₁ + δ₂ + ... + δ_N), each with its own quantization scale. The effective quantization grid at the finest level is the sum of N grids at different scales, yielding much finer effective precision than any single level's bit budget would suggest. This is the explanation for why 12-bit per-level quantization preserves quality at the finest level.
 - Storage analysis: bytes per Gaussian compared to flat approaches
 
 ### Section 4: Results (~2 pages)

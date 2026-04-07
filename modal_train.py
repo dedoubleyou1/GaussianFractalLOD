@@ -1077,7 +1077,8 @@ def main(
         print("Exporting PLY files...")
         plys = export_plys.remote(scene=scene, sh_degree=sh_degree, max_levels=max_levels, run_name=run_name, y_up=y_up)
         import os
-        out_dir = f"exports/{scene}"
+        suffix = f"_{run_name}" if run_name else ""
+        out_dir = f"exports/{scene}{suffix}"
         os.makedirs(out_dir, exist_ok=True)
         for filename, ply_bytes in plys:
             path = f"{out_dir}/{filename}"
